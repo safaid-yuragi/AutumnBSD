@@ -1,0 +1,4 @@
+# TLC を -metadir なしで回したときの作業ディレクトリと、反例から生成される仕様
+states/
+*_TTrace_*.tla
+*_TTrace_*.bin
