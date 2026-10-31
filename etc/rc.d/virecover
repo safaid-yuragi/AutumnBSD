@@ -1,0 +1,22 @@
+#!/bin/sh
+#
+# $NetBSD: virecover,v 1.9 2025/05/02 18:49:03 reed Exp $
+#
+
+# PROVIDE: virecover
+# REQUIRE: mountcritremote
+# BEFORE:  DAEMON
+#
+# XXX: should require `mail'!
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="virecover"
+rcvar=$name
+command="/usr/libexec/${name}"
+command_interpreter="/bin/sh"
+stop_cmd=":"
+reload_cmd=":"
+
+load_rc_config $name
+run_rc_command "$1"

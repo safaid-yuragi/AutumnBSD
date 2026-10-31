@@ -1,0 +1,77 @@
+#	$NetBSD: Makefile.inc,v 1.23 2026/08/02 02:59:14 brook Exp $
+#
+#	etc.evbppc/Makefile.inc -- evbppc-specific etc Makefile targets
+#
+
+# If you change the list of distributed kernels, don't forget
+# to update the release documentation in distrib/notes/common/contents
+
+.if ${MACHINE_ARCH} == "powerpc"
+# oea
+KERNEL_SETS+=		EV64260
+KERNEL_SETS+=		NINTENDO NINTENDO.MP
+KERNEL_SETS+=		PMPPC
+BUILD_KERNELS+=		INSTALL_PMPPC
+BUILD_KERNELS+=		INSTALL_NINTENDO
+# ibm4xx
+KERNEL_SETS+=		DHT
+KERNEL_SETS+=		EXPLORA451
+KERNEL_SETS+=		OPENBLOCKS200 OPENBLOCKS266
+KERNEL_SETS+=		WALNUT
+BUILD_KERNELS+=		INSTALL_OPENBLOCKS266
+BUILD_KERNELS+=		INSTALL_WALNUT
+# booke
+KERNEL_SETS+=		MPC8536DS MPC8548CDS
+KERNEL_SETS+=		P2020DS P2020RDB
+KERNEL_SETS+=		RB800 RB850GX2
+KERNEL_SETS+=		TWRP1025
+BUILD_KERNELS+=		INSTALL_P2020DS INSTALL_P2020RDB
+BUILD_KERNELS+=		INSTALL_RB850GX2
+BUILD_KERNELS+=		INSTALL_TWRP1025
+#
+KERNEL_SUFFIXES=	img bin ub
+.endif
+
+# Support for mkimage
+MKIMAGE= 	${NETBSDSRCDIR}/distrib/utils/embedded/mkimage
+IMAGE.rel=      ${RELEASEDIR}/${RELEASEMACHINEDIR}
+IMAGE.dir=      ${IMAGE.rel}/binary/gzimg
+IMAGE.kern=     ${IMAGE.rel}/binary/kernel
+IMAGEENDIAN=	be
+
+.if ${MACHINE_ARCH} == "powerpc"
+__mkimage: .USE
+	TOOL_MAKE=${MAKE} \
+	TOOL_MAKEFS=${TOOL_MAKEFS} \
+	TOOL_DISKLABEL=${TOOL_DISKLABEL} \
+	TOOL_FDISK=${TOOL_FDISK} \
+	TOOL_GPT=${TOOL_GPT} \
+	TOOL_GZIP=${TOOL_GZIP} \
+	TOOL_MKNOD=${TOOL_MKNOD} \
+	TOOL_PAX=${TOOL_PAX} \
+	TOOL_MKUBOOTIMAGE=${TOOL_MKUBOOTIMAGE} \
+	TOOL_MTREE=${TOOL_MTREE} \
+	TOOL_SED=${TOOL_SED} \
+	TOOL_PWD_MKDB=${TOOL_PWD_MKDB} \
+	HOST_SH=${HOST_SH} \
+	KERNOBJDIR=${KERNOBJDIR} \
+	MACHINE=${MACHINE} \
+	MKDTB=${MKDTB} \
+	MKPOSTFIX=${MKPOSTFIX} \
+	${HOST_SH} -x ${MKIMAGE} -h ${.TARGET:S/smp_//} -D ${DESTDIR} \
+            -S ${NETBSDSRCDIR} -B ${IMAGEENDIAN} ${MKI_OPTS.${.TARGET}} \
+            ${IMAGE.dir}/${.TARGET:S/smp_//}.img.gz
+	@echo "===> Making hash files: ${HASHES}"
+	for hash in ${HASHES}; do \
+		(cd ${IMAGE.dir} && ${TOOL_CKSUM} -a $${hash} ${.TARGET:S/smp_//}.img.gz > $${hash}); \
+	done
+
+smp_nintendo: __mkimage
+	cd ${KERNSRCDIR}/arch/evbppc/stand/wii && ${MAKE} release
+MKI_OPTS.smp_nintendo=		-K ${IMAGE.kern} -x
+SNAP_MD_POST_DEPS+=		smp_nintendo
+INSTALLATION_DIRS+=		binary/gzimg
+INSTALLATION_DIRS+=		installation/misc
+.endif
+
+snap_md_post: check_DESTDIR check_RELEASEDIR snap_post .WAIT ${SNAP_MD_POST_DEPS}

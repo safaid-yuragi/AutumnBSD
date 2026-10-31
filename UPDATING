@@ -1,0 +1,671 @@
+$NetBSD: UPDATING,v 1.393 2026/10/08 19:20:20 riastradh Exp $
+
+This file (UPDATING) is intended to be a brief reference to recent
+changes that might cause problems in the build process, and a guide for
+what to do if something doesn't work.
+
+For a more detailed description of the recommended way to build NetBSD
+using build.sh, see the BUILDING file.
+
+Note that much of the advice in this UPDATING file was written before
+build.sh existed.  Nevertheless, the advice here may be useful for
+working around specific problems with build.sh.
+
+Sections are marked with "^^^^^".  After the section on "Recent changes"
+are several sections containing more general information.
+
+See also: BUILDING, build.sh, Makefile.
+
+Recent changes:
+^^^^^^^^^^^^^^^
+
+20261008:
+	A series of changes to the way USE_SSP and USE_FORT work in
+	makefiles requires a clean build; otherwise the kernel may fail
+	to link and some object files and programs, in the kernel and
+	userland alike, may have mistakenly built without SSP.  For
+	details, see PR lib/60858: fortuitous embarrassment: fortify is
+	all kinds of busted <https://gnats.NetBSD.org/60858>.
+
+20260720:
+	The ld.elf_so change to enable DEBUG by default requires making
+	the `cleandir' target in src/libexec/ld.elf_so.
+
+20260419:
+	The switch between jemalloc versions requires removal of the
+	object directories for libc and external/bsd/jemalloc
+	(and all compat variants of that).
+
+20251219:
+	Reorganization of libraries for PR 58648 requires a new enough
+	nbcrunchgen tool (this should be build automatically) and manual
+	removal of $DESTDIR/usr/lib/libssh* and $DESTDIR/usr/lib/*/libssh*.
+
+20251028:
+	libpthread had its shared library version go back (from 1.7 to
+	1.6). This may cause fallout during update builds, remove the
+	libpthread obj dir and all libpthread.so.1.7\* files in the
+	dest dir.
+	If you have build other software/packages on a -current system
+	from 20251026 or 20251027 you need to rebuild them after
+	updating your base system again.
+
+20251019:
+	Changes to how libcrypto got linked (libpthread not required
+	any more) cause failures in update builds. To fix, run
+	(as your build user) a "make cleandir" in the following
+	subdirectories:
+
+	crypto/external/apache2/openssl
+	crypto/external/bsd/heimdal
+	crypto/external/bsd/netpgp
+	crypto/external/bsd/openssh
+	external/bsd/libfido2
+	external/bsd/nsd
+	external/bsd/ntp
+	external/bsd/pam-u2f
+	external/bsd/ppp
+	external/bsd/tcpdump
+	external/bsd/wpa
+	games/factor
+	libexec/httpd
+	tests/crypto/libcrypto
+	tests/lib/libc/hash
+	usr.bin/dc
+	usr.bin/ftp
+	usr.bin/moduli
+	usr.bin/nbsvtool
+	usr.sbin/plainrsa-gen
+	usr.sbin/syslogd
+
+20250721:
+	GCC 12.5 was imported and there may be weird build issues.
+	Clean any GCC build dirs if you encounter weird things.
+
+20250720:
+	New openssl and old objects for tests for libcrypto may
+	cause spurious test failure, clean the src/tests/crypto/libcrypto
+	object dirs.
+
+20250528:
+	Changes in the tools build require removing all config.cache
+	files in the object tools directories.
+
+20250427:
+	The KERNEL_DIR option to build.sh is now functional.  Set it
+	with ``-V KERNEL_DIR=yes'' on your build.sh command.
+	With this, you can now colocate kernel and associated modules
+	in /netbsd/{kernel,kernel.dbg,modules} instead of having the
+	kernel in / but modules in /stand.
+
+	Note that you'll need new bootstrap code to use this feature.
+
+	This completes work begun many years ago by christos@ :-)
+
+20250413:
+	A change to bsd.lib.mk requires a clean build of all libraries.
+
+20250131:
+	The switch to the new jemalloc requires cleaning in libc.
+
+20241122:
+	Changes to various libraries' build options require cleaning
+	their objdirs in update builds:
+
+	cd external/bsd/file/lib && $TOOLDIR/bin/nbmake-$ARCH clean
+	cd external/bsd/libarchive/lib && $TOOLDIR/bin/nbmake-$ARCH clean
+	cd external/public-domain/xz/lib && $TOOLDIR/bin/nbmake-$ARCH clean
+
+	Also, for architectures with MKCOMPAT, it is necessary to clean
+	the compat objdirs too.  The easiest way is:
+
+	rm -rf OBJDIR/compat/*/*/external/bsd/file/lib
+	rm -rf OBJDIR/compat/*/*/external/bsd/libarchive/lib
+	rm -rf OBJDIR/compat/*/*/external/public-domain/xz/lib
+
+	Changes to bsd.lib.mk to improve detecting differences in
+	shared library symbol exports may cause some .actsym files in
+	the objdir to become stale in update builds.
+
+	To work around this, delete all files matching `*.actsym' in
+	the objdir.  For example:
+
+	find OBJDIR -name '*.actsym' -type f -print0 | xargs -0 rm
+
+20241104:
+	Changes around the integration of the zstd compression
+	library may require manual deletion of some object directories
+	if you update from a build from a few days ago:
+	rm -rf DESTDIR/usr/lib/*/libarchive*
+	rm -rf DESTDIR/usr/lib/*/libmagic*
+	rm -rf DESTDIR/usr/lib/*/libzstd*
+	rm -rf DESTDIR/usr/lib/libarchive*
+	rm -rf DESTDIR/usr/lib/libmagic*
+	rm -rf DESTDIR/usr/lib/libzstd*
+	rm -rf OBJDIR/compat/*/*/external/bsd/file/
+	rm -rf OBJDIR/compat/*/*/external/bsd/libarchive/
+	rm -rf OBJDIR/compat/*/*/external/bsd/zstd/
+	rm -rf OBJDIR/external/bsd/file/
+	rm -rf OBJDIR/external/bsd/libarchive/
+	rm -rf OBJDIR/external/bsd/zstd/
+	rm -rf OBJDIR/external/gpl3/gcc/
+	rm -rf OBJDIR/tools/gcc/
+
+20240926:
+	Building -current when running on amd64 from about 20240924
+	to about 20240926 will not work due to a "malloc_np.h"
+	error. Please downgrade to a version from 20240924 or older,
+	or upgrade to a newer version e.g. using a binary release from
+	the NetBSD build servers.
+
+20240923:
+	Update builds will require cleaning the object directories for
+	jemalloc (like: "rm -rf $OBJ/external/bsd/jemalloc*") and the
+	libc dependency files (like: "rm $OBJ/lib/libc/jemalloc.*").
+	On architectures with COMPAT libs, those also have to be cleaned,
+	e.g. on sparc64: "rm -rf $OBJ/compat/sparc64/sparc/external/bsd/jemalloc*"
+	and "rm $OBJ/compat/sparc64/sparc/lib/libc/jemalloc.*".
+
+20240920:
+	Update builds will require cleaning in src/external/historical/nawk/bin
+	in order to remove the awk subdirectory since there is now a binary
+	called awk.
+
+20240817:
+	Update builds will require cleaning in src/external/historical/nawk/bin
+	in order to remove the awk binary since now there is a subdirectory
+	called awk.
+
+20240812:
+	Update builds will require removing the tools objdir for gdb
+	if building with MKCROSSGDB=yes. All architectures use gdb.old
+	now.
+
+20240630:
+	Update builds will require removing the tools objdir for binutils
+	(as most architectures should use binutils.old now).
+
+20240610:
+	Update builds are likely to require removing the objdir for
+	distrib/<arch>/cdroms - or at least references to libarchive
+	from within there after the recent libarchive update.
+
+20240504:
+	Update builds on x86 require making the `cleandir' target in
+	lib/libm, or deleting the objdir for lib/libm.
+
+20240423:
+	Update builds with x11 may fail after switching to Mesa 21.
+
+20240410:
+	Update builds may require manually deleting
+	$DESTDIR/var/run/named (and, potentially,
+	$DESTDIR/var/run/lwresd) in order to avoid checkflist failure.
+
+20240409:
+	32-bit compatibility libraries were moved into the base32
+	and debug32 sets.  HTML man pages were moved into the manhtml set.
+
+20230828:
+	If:
+        - you updated to current and ran postinstall between 20230826
+	  and 20230828 inclusive, and
+        - you are not using anything outside the base system to
+	  populate /etc/openssl/certs (e.g., manually adding
+	  certificates or using ca-certificates or mozilla-rootcerts or
+	  mozilla-rootcerts-openssl from pkgsrc),
+	delete /etc/openssl/certs and rerun postinstall or just
+	`certctl rehash'.
+
+	Otherwise, certctl(8) will think someone else has left
+	/etc/openssl/certs in the way and will avoid clobbering it on
+	upgrade from older NetBSD.
+
+20230718:
+	build.sh will use mk.conf in the same directory as build.sh instead
+	of /etc/mk.conf, unless MAKECONF is already defined in the environment.
+
+20230714:
+	Import of gcc 10.5 requires a clean build of at least tools/gcc
+	and external/gpl3/gcc* object directories. An update build
+	without cleaning will result in obscure failures in rare corner
+	cases.
+
+20230604:
+	Building native kernels with the installed make(1) instead of
+	the $TOOLDIR/bin/nbmake-${arch} wrapper will fail if userland
+	has not been updated. Note that this is an unsupported build
+	configuration (but usually works if userland is -current enough).
+
+20230523:
+	ctfmerge was fixed as macOS host tool. This may require a clean tools
+	rebuild to detect the update to tools/compat/configure.
+
+20230515:
+	New openssl build requires removal of the crypto/external/bsd/openssl
+	and tests/crypto/libcrypto subdirectories in the ${OBJDIR} hierarchy.
+	Otherwise test results may be wrong due to wrong "golden" output
+	files being installed.
+
+20230322:
+	Fixes for moved /lib/libisns* mean that builds will complain about
+	./usr/lib/libisns* being missing until src/lib/libisns is forced
+	to (re)install the files, including the symlinks.  The simplest
+	way is to clean this subdir before building.
+
+20230112:
+	New binutils require an updated ld.elf_so. If you are doing
+	(unsupported) in-place self builds (with the -E flag to build.sh),
+	make sure to have installed latest ld.elf_so before you rebuild
+	userland.
+
+20221116:
+	The addition to NetBSD's version of UFS2 of support for extended
+	attributes broke backward compatibility with previous releases
+	of NetBSD, so UFS2 has been restored to being compatible with
+	previous NetBSD releases by disabling extended attributes.
+	(Note that ACLs are implemented as extended attributes, so
+	this changes disables ACLs as well.)
+
+	Support for UFS2 with extended attributes is now available in a new
+	UFS variant called UFS2ea.  If you have created extended attributes
+	in an original UFS2 file system then "fsck -p" will now fail due to
+	the unexpected presence of extended attributes and "fsck -y" will
+	remove all extended attributes.  If you wish to preserve extended
+	attributes rather than delete them, there is a utility to convert
+	a UFS2 file system to UFS2ea and leave extended attributes in place,
+	but this should be used with caution since it will preserve any
+	extended attributes that have been corrupted by the backward
+	incompatibility too.
+
+	If you wish to use a UFS2ea file system as your root file system,
+	then you will need to update your boot loader to a version that
+	supports UFS2ea.
+
+	For more information, see:
+	https://wiki.netbsd.org/features/UFS2ea
+
+20221111:
+	The new libdrm import worsened the conflict issues for the
+	kdump/ktruss ioctl, and i915 now conflicts with base, and has
+	been turned off.  This will cause update build issues like:
+
+		kdump-ioctl.c:12175:143: error: 'DRM_IOCTL_I915_DESTROY_HEAP'
+		   undeclared here (not in a function);
+		   did you mean 'DRM_IOCTL_MODE_DESTROY_DUMB'?
+
+	You'll need to clean usr.bin/ktruss, usr.bin/kdump, and rescue.
+
+20220921:
+	Since the kernel version was bumped to 9.99.100, the bootloader
+	must be updated on x86 or EFI boot platforms in order to load
+	modules from boot.cfg(5) or interactively at the bootloader
+	prompt.
+
+	The kernel can still load modules at runtime, with modload(8)
+	or modules.conf(5), with no bootloader update.  This will not
+	affect release branches because it only applies to patch
+	numbers >=100.
+
+	On x86 (i386 or amd64) with BIOS boot, this requires copying a
+	new /usr/mdec/boot to /boot.  You can build this in the destdir
+	by running `$TOOLDIR/bin/nbmake-$ARCH dependall install' in
+	sys/arch/i386/stand.
+
+	On platforms with EFI boot (including x86 with EFI boot), this
+	requires copying a new /usr/mdec/boot*.efi to the EFI/BOOT/
+	directory on the EFI system partition.  The boot*.efi file is:
+
+	aarch64	bootaa64.efi
+	amd64	bootx64.efi
+	arm	bootarm.efi	(32-bit arm)
+	i386	bootx32.efi
+
+	You can build this in the destdir by running
+	`$TOOLDIR/bin/nbmake-$ARCH dependall install' in
+	sys/stand/efiboot/boot*.
+
+20220821:
+	Support for building extsrc/ has been deprecated.
+	EXTSRCSRCDIR and MKEXTSRC have been deprecated.
+
+20220714:
+	Updates to xorg-server and associated drivers may cause builds to
+	fail.  Cleaning both DESTDIR and the xorg build tree may be needed.
+
+20220628:
+	Changes in the build of src/games/robots require a clean build
+	of that program.
+
+20211116:
+	Changes in the xorg build require clean obj dirs for external/mit/xorg
+	(or a full clean/non-update build).
+
+20211112:
+	Device tree sources were updated for evbarm.  Some device nodes
+	(in particular, ld(4) devices on the ROCKPro64) will be renumbered.
+
+20211014:
+	MKPIE default for aarch64 has changed, a clean build is required.
+
+20210917:
+	Changed MNT_ACLS to default to POSIX1e ACLs instead of NFSv4
+	ACLs, to be compatible with FreeBSD. If you are using NFSv4 ACLs
+	and have "acls" in /etc/fstab you'll need to change it to "nfs4acls".
+
+20210711:
+	Updated GMP sources may require cleaning in tools/gmp and/or in
+	external/lgpl3/gmp/lib, particularly if GCC itself does not build.
+
+20210417:
+	GCC 10 was enabled for several platforms.  If builds fail in either
+	tools/gcc or external/gpl3/gcc, first try cleaning those objects and
+	removing the $DESTDIR/usr/include/g++ subdirectory.
+
+20201016:
+	MIPS kernel modules have been disabled until they work.  This will
+	turn up in extra files in the DESTDIR, which should be cleaned.
+
+20200925:
+	GNU MPC and MPFR have been updated.  At least MPFR needs cleaning
+	in both the tools and external dirs.
+
+20200912:
+	GCC 9 has arrived for Arm and x86 platforms, and will be coming
+	for several more, as will binutils 2.34.  Clean as required.
+
+20200907:
+	GCC 9 is coming, and binutils has been updated for MIPS.  This
+	probably requires cleaning the tools/binutils.
+
+20200811:
+	GCC updates may require cleaning the objdir.  This may occur
+	due to GCC 7.5 update, GCC 8.4 move to gcc.old, or the upcoming
+	GCC 9 upgrade.
+
+20200614:
+	blacklist* has been renamed to blocklist*. postinstall(8)
+	should handle the migration.
+
+20200601:
+	Due to a mistake in LIBISPRIVATE handling, .so libraries were
+	created in the build directories and need cleaning.
+
+20200311:
+	GCC 8 ports will need cleaning in src/tools/gcc and
+	src/external/gpl3/gcc due to GCC 8.4 update.
+
+20191118:
+	More architectures were switched to gcc8:
+	    i386, ia64 powerpc64, sparc, sparc64, arm
+	The same comments as in 20191022 apply.
+
+20191112:
+	The LLVM update requires a clean rebuild for all architectures using
+	LLVM during the tools build phase (i386, amd64, aarch64).
+
+20191022:
+	Ports amd64 and aarch64 switched to GCC 8.3 by default.
+	In-place ("expert mode", build.sh -E) builds are not supported
+	when going from a GCC 7 userland to GCC 8. Do a regular
+	build to a different DESTDIR (or preferably: build.sh -U) at least
+	once and install sets, or download comp.{tar.xz,tgz} from the
+	daily builds and install that before doing the next in-place build.
+
+20191001:
+	GCC 8.3 was imported.  Builds of src/tools/gcc may fail if
+	old builds with GCC 7 output now uses GCC 8.  Clean this
+	directory, and also clean src/external/gpl3/gcc.
+
+20190903:
+	Files with names that coincide with existing files' names on
+	case-insensitive file systems were inadvertently committed, for
+	radeon GPU firmware.  We cannot mark these as obsolete for
+	postinstall to fix, so if you updated src since 2019-08-26, and
+	ran build.sh distribution or ran build.sh release, you must
+	manually delete the following files in your DESTDIR (which is
+	usually $OBJDIR/destir.$ARCH), or from / if you have installed
+	them:
+
+		/libdata/firmware/radeon/bonaire_ce.bin
+		/libdata/firmware/radeon/bonaire_mc.bin
+		/libdata/firmware/radeon/bonaire_me.bin
+		/libdata/firmware/radeon/bonaire_mec.bin
+		/libdata/firmware/radeon/bonaire_pfp.bin
+		/libdata/firmware/radeon/bonaire_rlc.bin
+		/libdata/firmware/radeon/bonaire_sdma.bin
+		/libdata/firmware/radeon/bonaire_smc.bin
+		/libdata/firmware/radeon/bonaire_uvd.bin
+		/libdata/firmware/radeon/hainan_ce.bin
+		/libdata/firmware/radeon/hainan_mc.bin
+		/libdata/firmware/radeon/hainan_me.bin
+		/libdata/firmware/radeon/hainan_pfp.bin
+		/libdata/firmware/radeon/hainan_rlc.bin
+		/libdata/firmware/radeon/hainan_smc.bin
+		/libdata/firmware/radeon/hawaii_ce.bin
+		/libdata/firmware/radeon/hawaii_mc.bin
+		/libdata/firmware/radeon/hawaii_me.bin
+		/libdata/firmware/radeon/hawaii_mec.bin
+		/libdata/firmware/radeon/hawaii_pfp.bin
+		/libdata/firmware/radeon/hawaii_rlc.bin
+		/libdata/firmware/radeon/hawaii_sdma.bin
+		/libdata/firmware/radeon/hawaii_smc.bin
+		/libdata/firmware/radeon/kabini_ce.bin
+		/libdata/firmware/radeon/kabini_me.bin
+		/libdata/firmware/radeon/kabini_mec.bin
+		/libdata/firmware/radeon/kabini_pfp.bin
+		/libdata/firmware/radeon/kabini_rlc.bin
+		/libdata/firmware/radeon/kabini_sdma.bin
+		/libdata/firmware/radeon/kaveri_ce.bin
+		/libdata/firmware/radeon/kaveri_me.bin
+		/libdata/firmware/radeon/kaveri_mec.bin
+		/libdata/firmware/radeon/kaveri_mec2.bin
+		/libdata/firmware/radeon/kaveri_pfp.bin
+		/libdata/firmware/radeon/kaveri_rlc.bin
+		/libdata/firmware/radeon/kaveri_sdma.bin
+		/libdata/firmware/radeon/mullins_ce.bin
+		/libdata/firmware/radeon/mullins_me.bin
+		/libdata/firmware/radeon/mullins_mec.bin
+		/libdata/firmware/radeon/mullins_pfp.bin
+		/libdata/firmware/radeon/mullins_rlc.bin
+		/libdata/firmware/radeon/mullins_sdma.bin
+		/libdata/firmware/radeon/oland_ce.bin
+		/libdata/firmware/radeon/oland_mc.bin
+		/libdata/firmware/radeon/oland_me.bin
+		/libdata/firmware/radeon/oland_pfp.bin
+		/libdata/firmware/radeon/oland_rlc.bin
+		/libdata/firmware/radeon/oland_smc.bin
+		/libdata/firmware/radeon/pitcairn_ce.bin
+		/libdata/firmware/radeon/pitcairn_mc.bin
+		/libdata/firmware/radeon/pitcairn_me.bin
+		/libdata/firmware/radeon/pitcairn_pfp.bin
+		/libdata/firmware/radeon/pitcairn_rlc.bin
+		/libdata/firmware/radeon/pitcairn_smc.bin
+		/libdata/firmware/radeon/tahiti_ce.bin
+		/libdata/firmware/radeon/tahiti_mc.bin
+		/libdata/firmware/radeon/tahiti_me.bin
+		/libdata/firmware/radeon/tahiti_pfp.bin
+		/libdata/firmware/radeon/tahiti_rlc.bin
+		/libdata/firmware/radeon/tahiti_smc.bin
+		/libdata/firmware/radeon/verde_ce.bin
+		/libdata/firmware/radeon/verde_mc.bin
+		/libdata/firmware/radeon/verde_me.bin
+		/libdata/firmware/radeon/verde_pfp.bin
+		/libdata/firmware/radeon/verde_rlc.bin
+		/libdata/firmware/radeon/verde_smc.bin
+
+	We will re-import these radeon firmware images another way
+	later.
+
+20190727:
+	The uefi bootloader has gained tftp support and needs a clean
+	build. If you do update builds, manually clean its object
+	directory by something like:
+	cd sys/arch/i386/stand/efiboot && make clean
+
+20190723:
+	The jemalloc allocator in libc is now built without extended
+	debugging (for performance reasons). In update builds make sure
+	to rebuild it completely, by removing all affected object files,
+	including compat builds, something like:
+	cd /usr/obj && find . -type d -name jemalloc|xargs rm -rf
+
+20190207:
+	GCC 7 switched for many ports.  Update builds are likely to fail.
+
+Hints for a more successful build:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    Use build.sh, but do not use its "expert mode":
+	This will automatically build the tools in the
+	   correct order, and it will keep the tools and the
+	   new build products from interfering with the running
+	   system.  This will allow you to ignore most of the
+	   other advice in this file.
+    Build a new kernel first:
+	This makes sure that any new system calls or features
+	   expected by the new userland will be present.  This
+	   helps to avoid critical errors when upgrading.
+    Use object directories:
+	This helps to keep stale object
+	   files from polluting the build if a Makefile "forgets"
+	   about one.  It also makes it easier to clean up after
+	   a build.  It's also necessary if you want to use the
+	   same source tree for multiple machines.
+	   To use object directories with build.sh:
+	    a) invoke build.sh with the "-M" or "-O" options.
+	   To use object directories without using build.sh:
+	    a) cd /usr/src ; make cleandir
+	    b) Add "OBJMACHINE=yes" to /etc/mk.conf
+	    c) Add "MKOBJDIRS=yes" to /etc/mk.conf
+	    d) cd /usr/src ; make build
+	   Note that running "make obj" in a directory will create
+	   in obj.$MACHINE directory.
+    Build to a DESTDIR:
+	This helps to keep old installed files (especially libraries)
+	   from interfering with the new build.
+	   To build to a DESTDIR with build.sh, use the "-D" option.
+	   To build to a DESTDIR without using build.sh, set the DESTDIR
+	   environment variable before running make build.  It should be
+	   set to the pathname of an initially empty directory.
+	   Problems: if you do not use build.sh, you might need to
+		update critical utilities without using DESTDIR since
+		nothing is executed from what is installed in DESTDIR.
+		(See critical utils, below.)
+    Build often:
+	This keeps critical utilities current enough to not choke
+	on any other part of the source tree that depends on up to
+	date functionality.  If you use build.sh, you should not have
+	this problem.
+
+What to do if things don't work:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+When things don't work there are usually a few things that commonly
+should be done.
+    1)	make includes
+	This should be done automatically by make build.
+    2)  cd share/mk && make install
+	Again, automatically done by make build.
+
+Failsafe rebuild of a small part of the tree:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+To make sure you rebuild something correctly you want to do
+something like the following:
+    1)  Make sure the includes and .mk files are up to date.
+    2)  Make sure any program used to build the particular
+	utility is up to date.  (yacc, lex, etc...)
+    3)  cd ...path/to/util...
+	make cleandir
+	rm ...all obj directories...
+	make cleandir			# yes, again
+	make obj
+	make depend && make
+
+Failsafe rebuild of the entire tree:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+If you really want to make sure the source tree is clean and
+ready for a build try the following.  Note that sourcing /etc/mk.conf
+(a make(1) Makefile) in this manner is not right, and will not work
+for anyone who uses any make(1) features in /etc/mk.conf.
+
+---cut here---
+#!/bin/sh
+. /etc/mk.conf
+
+if [ -z $NETBSDSRCDIR ] ; then
+    NETBSDSRCDIR=/usr/src
+fi
+if [ \! -d $NETBSDSRCDIR ] ; then
+    echo Unable to find sources
+    exit 1
+fi
+find $NETBSDSRCDIR -name \*.o -o -name obj.\* -o -name obj -exec rm \{\} \;
+
+if [ -z $BSDOBJDIR ] ; then
+    BSDOBJDIR=/usr/obj
+fi
+if [ -d $BSDOBJDIR ] ; then
+    rm -rf $BSDOBJDIR
+fi
+
+cd $NETBSDSRCDIR && make cleandir
+
+---cut here---
+
+Critical utilities:
+^^^^^^^^^^^^^^^^^^^
+	usr.bin/make
+	usr.bin/yacc
+	usr.bin/lex
+	usr.bin/xlint
+	usr.bin/config
+
+Other problems and possible solutions:
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Symptom:Complaints involving a Makefile.
+Fix:	Rebuild usr.bin/make:
+	cd usr.bin/make && make && make install
+	Or, a failsafe method if that doesn't work:
+	cd usr.bin/make && cc -DMAKE_NATIVE *.c -I. -o make \
+	&& install make /usr/bin
+
+Fix:	Make sure .mk files are up to date.
+	cd share/mk && make install
+
+Symptom:Kernel `config' fails to configure any kernel, including GENERIC.
+Fix:	Rebuild usr.bin/config
+
+Symptom:Obsolete intermediate files are used during compilation
+Fix:	Try the following sequence of commands in the directory in question.
+	make cleandir; rm `make print-objdir`; make cleandir; make obj
+	(If you built the tree without "make obj" in the past, obsolete files
+	may remain.  The command tries to clean everything up)
+
+Symptom:.../sysinst/run.c:xx: warning: initialization from incompatible
+	pointer type
+Fix:	Rebuild and install usr.bin/menuc
+
+Symptom:mklocale not found during build in share/locale/ctype
+Fix:	Build and install usr.bin/mklocale
+
+Symptom:undefined reference to `__assert13' or `__unsetenv13'
+Fix:    Rebuild and install lib/libc
+
+Symptom:usr.bin/config fails to build.
+Fix:	Try building with -DMAKE_BOOTSTRAP added to CFLAGS in Makefile.
+
+Symptom:undefined reference to `getprogname' or `setprogname'
+Fix:    Rebuild and install lib/libc
+
+Symptom:Update build fails in src/tools/gcc complaining that a variable
+	(e.g. CPPFLAGS) has changed since the previous run.
+Fix:    Run "nbmake-${ARCH} clean" in src/tools/gcc or do a clean build.
+
+Symptom:cvs [update aborted]: cannot open directory /cvsroot/src/...:
+	No such file or directory.
+Cause:	If a directory is created by mistake, then it is sometimes
+	deleted from the CVS repository using administrative commands
+	that bypass the normal cvs access controls.  If your cvs working tree
+	contains references to a directory that has been deleted on the
+	server in this way, then "cvs update" reports this error.
+Fix:	Recursively delete the affected directory from your working tree
+	and try the update again.

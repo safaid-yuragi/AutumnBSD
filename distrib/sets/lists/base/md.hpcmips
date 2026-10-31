@@ -1,0 +1,10 @@
+# $NetBSD: md.hpcmips,v 1.15 2024/07/11 20:41:06 riastradh Exp $
+#
+./usr/sbin/apm					base-sysutil-bin
+./usr/sbin/apmd					base-sysutil-bin
+./usr/sbin/tpctl				base-sysutil-bin
+./usr/sbin/zzz					base-sysutil-bin
+./usr/share/sysinst/catalog/sysinstmsgs.de	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.es	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.fr	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.pl	base-util-share

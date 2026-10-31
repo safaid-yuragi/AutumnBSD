@@ -1,0 +1,216 @@
+#	$NetBSD: files.ti,v 1.36 2026/09/27 19:56:21 yurix Exp $
+#
+
+file	arch/arm/ti/ti_cpufreq.c	soc_ti
+file	arch/arm/ti/am18xx_platform.c	soc_am18xx
+file	arch/arm/ti/am3_platform.c	soc_am33xx
+file	arch/arm/ti/omap3_platform.c	soc_omap3 | soc_omap4
+file	arch/arm/ti/omap_smc.S		soc_omap4
+
+# Interrupt controller
+device	omapintc: pic, pic_splfuncs
+attach  omapintc at fdt
+file	arch/arm/ti/ti_omapintc.c	omapintc
+
+device	am18xxintc: pic, pic_splfuncs
+attach	am18xxintc at fdt
+file	arch/arm/ti/am18xx_intc.c	am18xxintc
+
+# WakeupGen
+device	omapwugen
+attach	omapwugen at fdt with omapwugen
+file	arch/arm/ti/ti_omapwugen.c	omapwugen
+
+# sysc interconnect
+device	tisysc { } : fdt, ti_prcm
+attach	tisysc at fdt with ti_sysc
+file	arch/arm/ti/ti_sysc.c		ti_sysc
+
+# PRCM
+define	ti_prcm: fdt_clock
+file	arch/arm/ti/ti_prcm.c		ti_prcm
+
+# PRCM (AM3xxx)
+device	am3prcm { } : fdt, ti_prcm
+attach	am3prcm at fdt with am3_prcm
+file	arch/arm/ti/am3_prcm.c		am3_prcm
+
+# CM (OMAP3)
+device	omap3cm { } : fdt, ti_prcm
+attach	omap3cm at fdt with omap3_cm
+file	arch/arm/ti/omap3_cm.c		omap3_cm
+
+# PRM (OMAP3)
+device	omap3prm { } : fdt
+attach	omap3prm at fdt with omap3_prm
+file	arch/arm/ti/omap3_prm.c		omap3_prm
+
+# PRCM (OMAP4)
+device	omap4prcm { } : fdt, ti_prcm
+attach	omap4prcm at fdt with omap4_prcm
+file	arch/arm/ti/omap4_prcm.c	omap4_prcm
+
+# Clocks
+device	timuxclk: fdt_clock
+attach	timuxclk at fdt with ti_mux_clock
+file	arch/arm/ti/ti_mux_clock.c	ti_mux_clock
+
+device	tidivclk: fdt_clock
+attach	tidivclk at fdt with ti_div_clock
+file	arch/arm/ti/ti_div_clock.c	ti_div_clock
+
+device	tidpllclk: fdt_clock
+attach	tidpllclk at fdt with ti_dpll_clock
+file	arch/arm/ti/ti_dpll_clock.c	ti_dpll_clock
+
+device	tigateclk
+attach	tigateclk at fdt with ti_gate_clock
+file	arch/arm/ti/ti_gate_clock.c	ti_gate_clock
+
+device	ticompclk
+attach	ticompclk at fdt with ti_comp_clock
+file	arch/arm/ti/ti_comp_clock.c	ti_comp_clock
+
+device	am18xxpsc: fdt_clock
+attach	am18xxpsc at fdt
+file	arch/arm/ti/am18xx_psc.c am18xxpsc
+
+device	am18xxpllc: fdt_clock
+attach	am18xxpllc at fdt
+file	arch/arm/ti/am18xx_pllc.c am18xxpllc
+
+device	am18xxaclk: fdt_clock
+attach	am18xxaclk at fdt
+file	arch/arm/ti/am18xx_aclk.c am18xxaclk
+
+device	am18xxuphyclk: fdt_clock
+attach	am18xxuphyclk at fdt
+file	arch/arm/ti/am18xx_usbphyclk.c am18xxuphyclk
+
+# UART
+attach	com at fdt with ti_com: ti_prcm
+file	arch/arm/ti/ti_com.c		ti_com needs-flag
+
+# Timer
+device	omaptimer
+attach  omaptimer at fdt
+file	arch/arm/ti/ti_omaptimer.c	omaptimer
+
+device	am18xxtimer
+attach  am18xxtimer at fdt
+file	arch/arm/ti/am18xx_timer.c	am18xxtimer
+
+# GPIO
+device	tigpio: fdt_gpio, gpiobus
+attach	tigpio at fdt with ti_gpio
+file	arch/arm/ti/ti_gpio.c		ti_gpio
+
+device	am18xxgpio: fdt_gpio, gpiobus
+attach	am18xxgpio at fdt
+file	arch/arm/ti/am18xx_gpio.c	am18xxgpio
+
+device	am18xxpupd: fdt_pinctrl
+attach	am18xxpupd at fdt
+file	arch/arm/ti/am18xx_pupd.c	am18xxpupd
+
+# I2C
+device	tiiic: fdt_i2c, i2cbus, i2cexec
+attach	tiiic at fdt with ti_iic
+file	arch/arm/ti/ti_iic.c		ti_iic
+
+# Ethernet
+device  cpsw: ether, ifnet, arp, mii, mii_phy
+attach  cpsw at fdt
+file    arch/arm/ti/if_cpsw.c		cpsw
+
+# EDMA
+device	tiedma: fdt_powerdomain
+attach	tiedma at fdt with ti_edma
+file	arch/arm/ti/ti_edma.c		ti_edma
+device	titptc: fdt_powerdomain
+attach	titptc at fdt with ti_tptc
+file	arch/arm/ti/ti_tptc.c		ti_tptc
+
+# MMCHS
+attach	sdhc at fdt with ti_sdhc: ti_edma, ti_prcm
+file	arch/arm/ti/ti_sdhc.c		ti_sdhc
+
+device	am18xxsdmmc: sdmmcbus
+attach	am18xxsdmmc at fdt
+file	arch/arm/ti/am18xx_sdmmc.c	am18xxsdmmc
+
+# USB
+device	tiotg { } : fdt
+attach	tiotg at fdt with ti_otg
+file	arch/arm/ti/ti_otg.c		ti_otg
+
+device	tiusb { } : fdt
+attach	tiusb at fdt with ti_usb
+file	arch/arm/ti/ti_usb.c		ti_usb
+
+device	tiusbtll
+attach	tiusbtll at fdt with ti_usbtll
+file	arch/arm/ti/ti_usbtll.c		ti_usbtll
+
+attach	ohci at fdt with am18xxohci: fdt_clock, fdt_phy
+file	arch/arm/ti/am18xx_ohci.c	am18xxohci
+
+attach	ehci at fdt with ti_ehci: fdt_clock, fdt_phy, fdt_reset
+file	arch/arm/ti/ti_ehci.c		ti_ehci
+
+attach	motg at fdt with ti_motg
+file	arch/arm/ti/ti_motg.c		ti_motg
+
+attach	motg at fdt with omapmusb
+file	arch/arm/ti/ti_omapmusb.c	omapmusb
+
+device	am18xxusbphy: fdt_phy, fdt_clock
+attach	am18xxusbphy at fdt
+file	arch/arm/ti/am18xx_usbphy.c am18xxusbphy
+
+device	timotgphy: fdt_phy
+attach	timotgphy at fdt
+file	arch/arm/ti/ti_motgphy.c		timotgphy
+
+# RNG
+device	tirng
+attach	tirng at fdt with ti_rng
+file	arch/arm/ti/ti_rng.c		ti_rng
+
+# Display adapter
+device	omapfb: rasops16, rasops8, wsemuldisplaydev, vcons, edid
+attach	omapfb at fdt with omap3_dss
+file	arch/arm/ti/omap3_dss.c		omap3_dss
+
+define	tilcdcfbbus { }
+device	tilcdc: drmkms, tilcdcfbbus
+attach	tilcdc at fdt with ti_lcdc
+file	arch/arm/ti/ti_lcdc.c		ti_lcdc
+makeoptions	ti_lcdc	"CPPFLAGS.ti_lcdc"+="${CPPFLAGS.drmkms}"
+
+device	tifb: tilcdcfbbus, drmfb, wsemuldisplaydev
+attach	tifb at tilcdcfbbus with ti_fb
+file	arch/arm/ti/ti_fb.c		ti_fb
+makeoptions	ti_fb	"CPPFLAGS.ti_fb"+="${CPPFLAGS.drmkms}"
+
+# Memory controller
+device	tigpmc { } : fdt
+attach	tigpmc at fdt with ti_gpmc
+file	arch/arm/ti/ti_gpmc.c		ti_gpmc
+
+# NAND flash controller
+device	omapnand: nandbus
+attach	omapnand at fdt
+file	arch/arm/ti/omap2_nand.c	omapnand
+
+# Watchdog timer
+device	tiwdt: sysmon_wdog
+attach	tiwdt at fdt with ti_wdt
+file	arch/arm/ti/ti_wdt.c		ti_wdt
+
+# SOC parameters			XXX FDT_SYSCON
+defflag	opt_soc.h			SOC_TI: FDT_SYSCON
+defflag	opt_soc.h			SOC_AM18XX: SOC_TI
+defflag	opt_soc.h			SOC_AM33XX: SOC_TI
+defflag	opt_soc.h			SOC_OMAP3: SOC_TI
+defflag	opt_soc.h			SOC_OMAP4: SOC_TI

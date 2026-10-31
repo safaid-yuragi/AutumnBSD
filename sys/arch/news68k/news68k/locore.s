@@ -1,0 +1,563 @@
+/*	$NetBSD: locore.s,v 1.118 2026/04/28 03:29:10 thorpej Exp $	*/
+
+/*
+ * Copyright (c) 1988 University of Utah.
+ * Copyright (c) 1980, 1990, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: locore.s 1.66 92/12/22$
+ *
+ *	@(#)locore.s	8.6 (Berkeley) 5/27/94
+ */
+
+/*
+ * locore.s for news68k - based on mvme68k and hp300 version
+ */
+
+#include "opt_compat_netbsd.h"
+#include "opt_compat_sunos.h"
+#include "opt_fpsp.h"
+#include "opt_ddb.h"
+#include "opt_kgdb.h"
+#include "opt_lockdebug.h"
+#include "opt_fpu_emulate.h"
+#include "opt_m68k_arch.h"
+
+#include "assym.h"
+#include <machine/asm.h>
+#include <machine/trap.h>
+
+#include "ksyms.h"
+
+/*
+ * Temporary stack for a variety of purposes.
+ * Try and make this the first thing is the data segment so it
+ * is page aligned.  Note that if we overflow here, we run into
+ * our text segment.
+ */
+	.data
+	.space	PAGE_SIZE
+ASGLOBAL(tmpstk)
+
+ASLOCAL(monitor)
+	.long	0
+
+/*
+ * Macro to relocate a symbol, used before MMU is enabled.
+ */
+#define	IMMEDIATE	#
+#define	_RELOC(var, ar)			\
+	movl	IMMEDIATE var,ar;	\
+	addl	%a5,ar
+
+#define	RELOC(var, ar)		_RELOC(_C_LABEL(var), ar)
+#define	ASRELOC(var, ar)	_RELOC(_ASM_LABEL(var), ar)
+
+/*
+ * LED control for DEBUG.
+ */
+#define	IMMEDIATE	#
+#define	SETLED(func)	\
+	movl	IMMEDIATE func,%d0; \
+	jmp	debug_led
+
+#define	SETLED2(func)	\
+	movl	IMMEDIATE func,%d0; \
+	jmp	debug_led2
+
+#define	TOMONITOR	\
+	moveal	_ASM_LABEL(monitor), %a0; \
+	jmp	%a0@
+/*
+ * Initialization
+ *
+ * The bootstrap loader loads us in starting at 0, and VBR is non-zero.
+ * On entry, args on stack are boot device, boot filename, console unit,
+ * boot flags (howto), boot device name, filesystem type name.
+ */
+BSS(lowram,4)
+BSS(esym,4)
+
+/*
+ * This is for kvm_mkdb, and should be the address of the beginning
+ * of the kernel text segment (not necessarily the same as kernbase).
+ */
+	.text
+GLOBAL(kernel_text)
+
+/*
+ * start of kernel and .text!
+ */
+ASENTRY_NOPROFILE(start)
+	movw	#PSL_HIGHIPL,%sr	| no interrupts
+
+	movl	#0x0, %a5		| RAM starts at 0 (%a5)
+	movl	#0x0, %a6		| clear %fp to terminate debug trace
+
+	RELOC(bootdev,%a0)
+	movl	%d6, %a0@		| save bootdev
+	RELOC(boothowto,%a0)
+	movl	%d7, %a0@		| save boothowto
+
+	ASRELOC(tmpstk,%a0)
+	movl	%a0,%sp			| give ourselves a temporary stack
+
+	movc %vbr,%a0
+	movl %a0@(188),_ASM_LABEL(monitor)| save trap #15 to return PROM monitor
+	movl %a0@(128),_ASM_LABEL(romcallvec)| save trap #0 to use PROM calls
+
+	RELOC(esym, %a0)
+#if NKSYMS || defined(DDB) || defined(MODULAR)
+	movl	%d2,%a0@		| store end of symbol table
+#else
+	clrl	%a0@
+#endif
+	/* %d2 now free */
+	RELOC(lowram, %a0)
+	movl	%a5,%a0			| store start of physical memory
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| clear and disable on-chip cache(s)
+
+	movl	#DC_FREEZE,%d0		| data freeze bit
+	movc	%d0,%cacr		|  only exists on 68030
+	movc	%cacr,%d0		| read it back
+	tstl	%d0			| zero?
+	jeq	Lnot68030		| yes, we have 68020/68040
+
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| clear data freeze bit
+
+	RELOC(mmutype,%a0)
+	movl	#MMU_68030,%a0@
+	RELOC(cputype,%a0)
+	movl	#CPU_68030,%a0@
+	RELOC(fputype,%a0)
+	movl	#FPU_68882,%a0@
+
+	movl	%d6,%d0			| check bootdev
+	andl	#0x00007000,%d0		| BOOTDEV_HOST
+	cmpl	#0x00007000,%d0		| news1200?
+	jne	Lnot1200		| no, then skip
+
+	/* news1200 */
+	/* XXX Are these needed?*/
+	sf	0xe1100000		| AST disable (?)
+	sf	0xe10c0000		| level2 interrupt disable (?)
+	moveb	#0x03,0xe1140002	| timer set (?)
+	moveb	#0xd0,0xe1140003	| timer set (?)
+	sf	0xe1140000		| timer interrupt disable (?)
+	/* XXX */
+
+	RELOC(systype,%a0)
+	movl	#NEWS1200,%a0@
+	RELOC(ectype, %a0)		|
+	movl	#EC_NONE,%a0@		| news1200 have no L2 cache
+
+	/*
+	 * Fix up the physical addresses of the news1200's onboard
+	 * I/O registers (accessed via PA==VA mappings by TT0 register)
+	 */
+	RELOC(intiobase, %a0);
+	movl	#INTIOBASE1200,%a0@
+	RELOC(intiotop, %a0);
+	movl	#INTIOTOP1200,%a0@
+
+	RELOC(ctrl_power, %a0);
+	movl	#CTRL_POWER1200,%a0@	| CTRL_POWER port for news1200
+	RELOC(ctrl_led, %a0);
+	movl	#CTRL_LED1200,%a0@	| CTRL_LED port for news1200
+	jra	Lcom030
+
+Lnot1200:
+	tstl	%d0			| news1400/1500/1600/1700?
+	jne	Lnotyet			| no, then skip
+
+	/* news1400/1500/1600/1700 */
+	/* XXX Are these needed?*/
+	sf	0xe1280000		| AST disable (?)
+	sf	0xe1180000		| level2 interrupt disable (?)
+	st	0xe1300000		| L2 cache enable (?)
+	st	0xe1900000		| L2 cache clear (?)
+	sf	0xe1000000		| timer interrupt disable (?)
+	moveb	#0x36,0xe0c80000	| XXX reset FDC for PWS-1560
+	/* XXX */
+
+	/* news1400/1500/1600/1700 - 68030 CPU/MMU, 68882 FPU */
+	RELOC(systype,%a0)
+	movl	#NEWS1700,%a0@
+
+	cmpb	#0xf2,0xe1c00000	| read model id from idrom
+	jle	1f			|  news1600/1700 ?
+
+	RELOC(ectype, %a0)		| no, we are news1400/1500
+	movl	#EC_NONE,%a0		|  and do not have L2 cache
+	jra	2f
+1:
+	RELOC(ectype, %a0)		| yes, we are news1600/1700
+	movl	#EC_PHYS,%a0@		|  and have a physical address cache
+
+	/*
+	 * the news1700 EC is not compatible with the 68030 cache burst
+	 * mode, so patch up the CACR values used for various high-level
+	 * cache operations.
+	 */
+	RELOC(cacr_cache_on, %a0)
+	movl	#CACHE_ON_EC,%a0@
+	RELOC(cacr_ic_clr, %a0)
+	movl	#IC_CLR_EC,%a0@
+	RELOC(cacr_dc_clr, %a0)
+	movl	#DC_CLR_EC,%a0@
+2:
+	/*
+	 * Fix up the physical addresses of the news1700's onboard
+	 * I/O registers (accessed via PA==VA mappings by TT0 register)
+	 */
+	RELOC(intiobase, %a0);
+	movl	#INTIOBASE1700,%a0@
+	RELOC(intiotop, %a0);
+	movl	#INTIOTOP1700,%a0@
+
+	RELOC(ctrl_power, %a0);
+	movl	#CTRL_POWER1700,%a0@	| CTRL_POWER port for news1700
+	RELOC(ctrl_led, %a0);
+	movl	#CTRL_LED1700,%a0@	| CTRL_LED port for news1700
+
+	RELOC(cache_ctl, %a0);
+	movl	#0xe1300000,%a0@	| cache control port for news1700
+	RELOC(cache_clr, %a0);
+	movl	#0xe1900000,%a0@	| cache clear port for news1700
+Lcom030:
+
+	movl	%d4,%d1
+	addl	%a5,%d1
+	moveq	#PGSHIFT,%d2
+	lsrl	%d2,%d1			| convert to page (click) number
+	RELOC(maxmem, %a0)
+	movl	%d1,%a0@		| save as maxmem
+
+	movl	%d4,%d1			|
+	moveq	#PGSHIFT,%d2
+	lsrl	%d2,%d1			| convert to page (click) number
+	RELOC(physmem, %a0)
+	movl	%d1,%a0@		| save as physmem
+
+	jra	Lstart1
+Lnot68030:
+
+#ifdef news700 /* XXX eventually... */
+	RELOC(mmutype,%a0)
+	movl	#MMU_68851,%a0@
+	RELOC(cputype,%a0)
+	movl	#CPU_68020,%a0@
+	RELOC(fputype,%a0)
+	movl	#FPU_68881,%a0@
+	RELOC(ectype, %a0)
+	movl	#EC_NONE,%a0@
+#if 1	/* XXX */
+	jra	Lnotyet
+#else
+	/* XXX more XXX */
+	jra	Lstart1
+#endif
+Lnot700:
+#endif
+
+	/*
+	 * If we fall to here, the board is not supported.
+	 * Just drop out to the monitor.
+	 */
+
+	TOMONITOR
+	/* NOTREACHED */
+
+Lnotyet:
+	/*
+	 * If we get here, it means a particular model
+	 * doesn't have the necessary support code in the
+	 * kernel.  Just drop out to the monitor.
+	 */
+	TOMONITOR
+	/* NOTREACHED */
+
+Lstart1:
+/*
+ * configure kernel and lwp0 VA space so we can get going
+ */
+	.globl	_Sysseg_pa, _pmap_bootstrap, _avail_start
+
+#if NKSYMS || defined(DDB) || defined(MODULAR)
+	RELOC(esym,%a0)			| end of static kernel test/data/syms
+	movl	%a0@,%a4
+	tstl	%a4
+	jne	Lstart2
+#endif
+	movl	#_C_LABEL(end),%a4	| end of static kernel text/data
+Lstart2:
+	addl	%a5,%a4			| convert to PA
+	pea	%a5@			| reloff
+	pea	%a4@			| nextpa
+	RELOC(pmap_bootstrap1,%a0)
+	jbsr	%a0@			| pmap_bootstrap1(firstpa, nextpa)
+	addql	#8,%sp
+
+	/*
+	 * Updated nextpa returned in %d0.  We need to squirrel
+	 * that away in a callee-saved register to use later,
+	 * after the MMU is enabled.
+	 */
+	movl	%d0, %d7
+
+	/* NOTE: %d7 is now off-limits!! */
+
+/*
+ * Enable the MMU.
+ * Since the kernel is mapped logical == physical, there is no prep
+ * work to do.
+ */
+#include <m68k/m68k/mmu_enable.s>
+
+/*
+ * Should be running mapped from this point on
+ */
+Lmmuenabled:
+	lea	_ASM_LABEL(tmpstk),%sp	| re-load temporary stack
+	jbsr	_C_LABEL(vec_init)	| initialize vector table
+
+	/* phase 2 of pmap setup, returns lwp0 SP in %a0 */
+	jbsr	_C_LABEL(pmap_bootstrap2)
+	movl	%a0,%sp			| now running on lwp0's stack
+	movl	#0,%a6			| terminate the stack back trace
+
+	movl	%d7,%sp@-		| push nextpa saved above
+	jbsr	_C_LABEL(machine_init)	| additional pre-main initialization
+	addql	#4,%sp
+	jra	_C_LABEL(main)		| main() (never returns)
+
+/*
+ * Interrupt handlers.
+ */
+
+ENTRY_NOPROFILE(lev1intr)		/* Level 1: AST interrupt */
+	addql	#1,_C_LABEL(intr_depth)
+	INTERRUPT_SAVEREG
+	CPUINFO_INCREMENT(CI_NINTR)
+	addql	#1,_C_LABEL(m68k_intr_evcnt)+AST_INTRCNT
+	movl	_C_LABEL(ctrl_ast),%a0
+	clrb	%a0@			| disable AST interrupt
+	INTERRUPT_RESTOREREG
+	subql	#1,_C_LABEL(intr_depth)
+	jra	_ASM_LABEL(rei)		| handle AST
+
+#ifdef notyet
+ENTRY_NOPROFILE(_softintr)		/* Level 2: software interrupt */
+	INTERRUPT_SAVEREG
+	jbsr	_C_LABEL(softintr_dispatch)
+	INTERRUPT_RESTOREREG
+	rte
+#endif
+
+ENTRY_NOPROFILE(lev3intr)		/* Level 3: fd, lpt, vme etc. */
+	addql	#1,_C_LABEL(intr_depth)
+	INTERRUPT_SAVEREG
+	jbsr	_C_LABEL(intrhand_lev3)
+	INTERRUPT_RESTOREREG
+	subql	#1,_C_LABEL(intr_depth)
+	rte
+
+ENTRY_NOPROFILE(lev4intr)		/* Level 4: scsi, le, vme etc. */
+	addql	#1,_C_LABEL(intr_depth)
+	INTERRUPT_SAVEREG
+	jbsr	_C_LABEL(intrhand_lev4)
+	INTERRUPT_RESTOREREG
+	subql	#1,_C_LABEL(intr_depth)
+	rte
+
+ENTRY_NOPROFILE(_isr_clock)		/* Level 6: clock (see clock_hb.c) */
+	addql	#1,_C_LABEL(intr_depth)
+	INTERRUPT_SAVEREG
+	jbsr	_C_LABEL(clock_intr)
+	INTERRUPT_RESTOREREG
+	subql	#1,_C_LABEL(intr_depth)
+	rte
+
+#if 0
+ENTRY_NOPROFILE(lev7intr)		/* Level 7: NMI */
+	addql	#1,_C_LABEL(intrcnt)+NMI_INTRCNT
+	clrl	%sp@-
+	moveml	#0xFFFF,%sp@-		| save registers
+	movl	%usp,%a0		| and save
+	movl	%a0,%sp@(FR_SP)		|   the user stack pointer
+	jbsr	_C_LABEL(nmintr)	| call handler: XXX wrapper
+	movl	%sp@(FR_SP),%a0		| restore
+	movl	%a0,%usp		|   user SP
+	moveml	%sp@+,#0x7FFF		| and remaining registers
+	addql	#8,%sp			| pop SP and stack adjust
+	rte
+#endif
+
+/*
+ * news68k has hardware support for AST,
+ * so only traps (including system call) and
+ * the AST interrupt use the REI function.
+ */
+
+ENTRY(ecacheon)
+	tstl	_C_LABEL(ectype)
+	jeq	1f
+	movl	_C_LABEL(cache_ctl),%a0
+	st	%a0@			| NEWS-OS does `st 0xe1300000'
+1:
+	rts
+
+ENTRY(ecacheoff)
+	tstl	_C_LABEL(ectype)
+	jeq	1f
+	movl	_C_LABEL(cache_ctl),%a0
+	sf	%a0@			| NEWS-OS does `sf 0xe1300000'
+1:
+	rts
+
+/*
+ * Handle the nitty-gritty of rebooting the machine.
+ * Basically we just turn off the MMU, restore the PROM's initial VBR
+ * and jump through the PROM halt vector with argument via %d7
+ * depending on how the system was halted.
+ */
+ENTRY_NOPROFILE(machine_reboot)
+#if defined(M68040)
+	cmpl	#MMU_68040,_C_LABEL(mmutype)	| 68040?
+	jeq	Lnocache5		| yes, skip
+#endif
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| disable on-chip cache(s)
+Lnocache5:
+	movl	_C_LABEL(boothowto),%d7	| load howto
+	movl	_C_LABEL(bootdev),%d6	| load bootdev
+	movl	%sp@(4),%d2		| arg
+	andl	#RB_HALT,%d2		| %d2 == 0 -> autoboot, else halt
+	movl	_C_LABEL(saved_vbr),%d3	| Fetch original VBR value
+	lea	_ASM_LABEL(tmpstk),%sp	| physical SP in case of NMI
+	movl	#0,%a7@-		| value for pmove to TC (turn off MMU)
+	pmove	%a7@,%tc		| disable MMU
+	movc	%d3,%vbr		| Restore monitor's VBR
+	tstl	%d2			| autoboot?
+	beq	2f			| yes!
+	movl	%d2,%d7			|
+2:
+	trap	#15
+	/* NOTREACHED */
+
+STRONG_ALIAS(machine_halt,machine_reboot)
+
+/*
+ * debug_led():
+ * control LED routines for debugging
+ * used as break point before printf enabled
+ */
+ASENTRY_NOPROFILE(debug_led)
+	RELOC(ctrl_led,%a0)		| assume %a5 still has base address
+	movl	%d0,%a0@
+
+1:	nop
+	jmp	1b
+	rts
+
+/*
+ * debug_led2():
+ * similar to debug_led(), but used after MMU enabled
+ */
+ASENTRY_NOPROFILE(debug_led2)
+	movl	_C_LABEL(ctrl_led),%d1
+	movl    %d1,%a0
+	movl	%d0,%a0@
+
+1:	nop
+	jmp	1b
+	rts
+
+
+/*
+ * Misc. global variables.
+ */
+	.data
+
+GLOBAL(systype)
+	.long	NEWS1700	| default to NEWS1700
+
+GLOBAL(mmutype)
+	.long	MMU_68030	| default to MMU_68030
+
+GLOBAL(cputype)
+	.long	CPU_68030	| default to CPU_68030
+
+GLOBAL(ectype)
+	.long	EC_NONE		| external cache type, default to none
+
+/*
+ * Information from first stage boot program
+ */
+GLOBAL(bootpart)
+	.long	0
+GLOBAL(bootdevlun)
+	.long	0
+GLOBAL(bootctrllun)
+	.long	0
+GLOBAL(bootaddr)
+	.long	0
+
+GLOBAL(intiobase)
+	.long	0		| PA/KVA (via %tt0) of base of internal IO space
+
+GLOBAL(intiotop)
+	.long	0		| PA/KVA (via %tt0) of end of internal IO space
+
+GLOBAL(ctrl_power)
+	.long	0		| PA/KVA (via %tt0) of power control port
+
+GLOBAL(ctrl_led)
+	.long	0		| PA/KVA (via %tt0) of LED control port
+
+GLOBAL(cache_ctl)
+	.long	0		| PA/KVA (via %tt0) of ext cache control port
+
+GLOBAL(cache_clr)
+	.long	0		| PA/KVA (via %tt0) of ext cache clear port
+
+GLOBAL(cacr_cache_on)
+GLOBAL(cacr_cache_clr)
+	.long	CACHE_ON_DFLT
+GLOBAL(cacr_ic_clr)
+	.long	IC_CLR_DFLT
+GLOBAL(cacr_dc_clr)
+	.long	DC_CLR_DFLT
+
+GLOBAL(romcallvec)
+	.long	0

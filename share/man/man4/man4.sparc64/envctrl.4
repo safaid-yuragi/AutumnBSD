@@ -1,0 +1,81 @@
+.\"	$NetBSD: envctrl.4,v 1.7 2026/07/25 20:17:39 uwe Exp $
+.\"
+.\" Copyright (c) 2007 The NetBSD Foundation, Inc.
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+.\" ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+.\" TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+.\" PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+.\" BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+.\" CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+.\" SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+.\" INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+.\" CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+.\" ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+.\" POSSIBILITY OF SUCH DAMAGE.
+.\"
+.Dd July 24, 2026
+.Dt ENVCTRL 4 sparc64
+.Os
+.Sh NAME
+.Nm envctrl
+.Nd
+.Tn Sun
+Ultra Enterprise 250 and 450 environmental monitoring
+.Sh SYNOPSIS
+.Cd "envctrl* at ebus?"
+.Sh DESCRIPTION
+The
+.Nm
+driver provides thermal monitoring of processors and power supplies,
+as well as automatic fan regulation.
+The driver attaches to the
+.Ql SUNW,envctrl
+subsystem found on Ultra Enterprise 450 systems, and to the
+.Ql SUNW,envctrltwo
+subsystem found on Ultra Enterprise 250 systems.
+.Pp
+On Enterprise 450 systems, the following sensors can be queried with
+.Xr envstat 8 :
+.Bl -column -offset indent ".Li cpufan voltage" "count"
+.It Sy "Sensor" Ta Sy "Units" Ta Sy "Description"
+.It Li "CPU0" Ta "degC" Ta "Processor 0 temperature"
+.It Li "CPU1" Ta "degC" Ta "Processor 1 temperature"
+.It Li "CPU2" Ta "degC" Ta "Processor 2 temperature"
+.It Li "CPU3" Ta "degC" Ta "Processor 3 temperature"
+.It Li "PS0" Ta "degC" Ta "Power supply 0 temperature"
+.It Li "PS1" Ta "degC" Ta "Power supply 1 temperature"
+.It Li "PS2" Ta "degC" Ta "Power supply 2 temperature"
+.It Li "ambient" Ta "degC" Ta "Ambient temperature"
+.It Li "cpufan voltage" Ta "V" Ta "Voltage used to drive processor fans"
+.It Li "psfan voltage" Ta "V" Ta "Voltage used to drive power supply fans"
+.It Li "ps failed" Ta "count" Ta "Number of failed power supplies"
+.It Li "fans failed" Ta "count" Ta "Number of failed fans"
+.El
+.Pp
+whilst the following sensors can be queried on Enterprise 250 systems:
+.Bl -column -offset indent ".Li cpufan voltage" "count"
+.It Sy "Sensor" Ta Sy "Units" Ta Sy "Description"
+.It Li "PDB" Ta "degC" Ta "Power distribution board temperature"
+.It Li "SCSI" Ta "degC" Ta "SCSI temperature"
+.It Li "CPUFAN" Ta "V" Ta "CPU relative fan speed"
+.It Li "CPU0" Ta "degC" Ta "Processor 0 temperature"
+.It Li "CPU1" Ta "degC" Ta "Processor 1 temperature"
+.It Li "MB0" Ta "degC" Ta "Motherboard temperature 0"
+.It Li "MB1" Ta "degC" Ta "Motherboard temperature 1"
+.El
+.Sh SEE ALSO
+.Xr envsys 4 ,
+.Xr envstat 8
+.Sh BUGS
+Environmental interrupts are not supported.

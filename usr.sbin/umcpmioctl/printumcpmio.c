@@ -1,0 +1,1033 @@
+/*	$NetBSD: printumcpmio.c,v 1.4 2025/11/29 18:39:15 brad Exp $	*/
+
+/*
+ * Copyright (c) 2024 Brad Spencer <brad@anduin.eldar.org>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#include <sys/cdefs.h>
+#ifdef __RCSID
+__RCSID("$NetBSD: printumcpmio.c,v 1.4 2025/11/29 18:39:15 brad Exp $");
+#endif
+
+/* Functions to print stuff */
+
+#include <stdio.h>
+
+#include <dev/usb/umcpmio_io.h>
+#include <dev/usb/umcpmio_hid_reports.h>
+
+#undef EXTERN
+#define EXTERN
+#include "printumcpmio.h"
+
+/* This is all cheaply done */
+
+void
+print_status(uint8_t *br, uint8_t ct)
+{
+	const char *mcp2210_outputs[] = {
+		"cmd:\t\t\t\t",
+		"completion:\t\t\t",
+		"spi_bus_release:\t\t",
+		"spi_bus_owner:\t\t",
+		"attempted_password_tries:\t",
+		"password_guessed:\t\t",
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL
+	};
+
+	const char *mcp2221_outputs[] = {
+		"cmd:\t\t\t\t",
+		"completion:\t\t\t",
+		"cancel_transfer:\t\t",
+		"set_i2c_speed:\t\t",
+		"i2c_clock_divider:\t\t",
+		NULL,
+		NULL,
+		NULL,
+		"internal_i2c_state:\t\t",
+		"lsb_i2c_req_len:\t\t",
+		"msb_i2c_req_len:\t\t",
+		"lsb_i2c_trans_len:\t\t",
+		"msb_i2c_trans_len:\t\t",
+		"internal_i2c_bcount:\t\t",
+		"i2c_speed_divider:\t\t",
+		"i2c_timeout_value:\t\t",
+		"lsb_i2c_address:\t\t",
+		"msb_i2c_address:\t\t",
+		NULL,
+		NULL,
+		"internal_i2c_state20:\t",
+		NULL,
+		"scl_line_value:\t\t",
+		"sda_line_value:\t\t",
+		"interrupt_edge_state:\t",
+		"i2c_read_pending:\t\t",
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		"mcp2221_hardware_rev_major:\t",
+		"mcp2221_hardware_rev_minor:\t",
+		"mcp2221_firmware_rev_major:\t",
+		"mcp2221_firmware_rev_minor:\t",
+		"adc_channel0_lsb:\t\t",
+		"adc_channel0_msb:\t\t",
+		"adc_channel1_lsb:\t\t",
+		"adc_channel1_msb:\t\t",
+		"adc_channel2_lsb:\t\t",
+		"adc_channel2_msb:\t\t",
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL
+	};
+
+	if (ct == UMCPMIO_CHIP_TYPE_2210) {
+		for (int n = 0; n < UMCPMIO_RES_BUFFER_SIZE; n++) {
+			if (mcp2210_outputs[n] != NULL)
+				printf("%02d:%s%d (0x%02X)\n", n, mcp2210_outputs[n], br[n], br[n]);
+		}
+	}
+	if (ct == UMCPMIO_CHIP_TYPE_2221) {
+		for (int n = 0; n < UMCPMIO_RES_BUFFER_SIZE; n++) {
+			if (mcp2221_outputs[n] != NULL)
+				printf("%02d:%s%d (0x%02X)\n", n, mcp2221_outputs[n], br[n], br[n]);
+		}
+	}
+}
+
+void
+print_sram(uint8_t *br, int subcode, uint8_t ct)
+{
+	const char *mcp2210_outputs[][64] = {
+		{
+			"cmd:\t\t\t",
+			"completion:\t\t\t",
+			NULL,
+			NULL,
+			"gp0_designation:\t\t\t",
+			"gp1_designation:\t\t\t",
+			"gp2_designation:\t\t\t",
+			"gp3_designation:\t\t\t",
+			"gp4_designation:\t\t\t",
+			"gp5_designation:\t\t\t",
+			"gp6_designation:\t\t\t",
+			"gp7_designation:\t\t\t",
+			"gp8_designation:\t\t\t",
+			"default_output_lsb:\t\t\t",
+			"default_output_msb:\t\t\t",
+			"default_direction_lsb:\t\t\t",
+			"default_direction_msb:\t\t\t",
+			"other_settings:\t\t\t",
+			"nvram_protection:\t\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		},
+		{
+			"cmd:\t\t\t",
+			"completion:\t\t\t",
+			NULL,
+			NULL,
+			"pin_value_lsb:\t\t\t",
+			"pin_value_msb:\t\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		},
+		{
+			"cmd:\t\t\t",
+			"completion:\t\t\t",
+			NULL,
+			NULL,
+			"pin_dir_lsb:\t\t\t",
+			"pin_dir_msb:\t\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		},
+		{
+			"cmd:\t\t\t",
+			"completion:\t\t\t",
+			"size_spi_res:\t\t\t",
+			NULL,
+			"bit_rate_byte_3:\t\t\t",
+			"bit_rate_byte_2:\t\t\t",
+			"bit_rate_byte_1:\t\t\t",
+			"bit_rate_byte_0:\t\t\t",
+			"idle_cs_value_lsb:\t\t\t",
+			"idle_cs_value_msb:\t\t\t",
+			"active_cs_value_lsb:\t\t\t",
+			"active_cs_value_msb:\t\t\t",
+			"cs_to_data_delay_lsb:\t\t\t",
+			"cs_to_data_delay_msb:\t\t\t",
+			"lb_to_cs_deassert_delay_lsb:\t\t\t",
+			"lb_to_cs_deassert_delay_msb:\t\t\t",
+			"delay_between_bytes_lsb:\t\t\t",
+			"delay_between_bytes_msb:\t\t\t",
+			"bytes_per_spi_transaction_lsb:\t\t\t",
+			"bytes_per_spi_transaction_msb:\t\t\t",
+			"spi_mode:\t\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		}
+	};
+
+	const char *mcp2221_outputs[] = {
+		"cmd:\t\t\t\t",
+		"completion:\t\t\t",
+		"len_chip_setting:\t\t",
+		"len_gpio_setting:\t\t",
+		"sn_initial_ps_cs:\t\t",
+		"clock_divider:\t\t",
+		"dac_reference_voltage:\t",
+		"irq_adc_reference_voltage:\t",
+		"lsb_usb_vid:\t\t\t",
+		"msb_usb_vid:\t\t\t",
+		"lsb_usb_pid:\t\t\t",
+		"msb_usb_pid:\t\t\t",
+		"usb_power_attributes:\t",
+		"usb_requested_ma:\t\t",
+		"current_password_byte_1:\t",
+		"current_password_byte_2:\t",
+		"current_password_byte_3:\t",
+		"current_password_byte_4:\t",
+		"current_password_byte_5:\t",
+		"current_password_byte_6:\t",
+		"current_password_byte_7:\t",
+		"current_password_byte_8:\t",
+		"gp0_settings:\t\t",
+		"gp1_settings:\t\t",
+		"gp2_settings:\t\t",
+		"gp3_settings:\t\t",
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL
+	};
+
+	if (ct == UMCPMIO_CHIP_TYPE_2210) {
+		for (int n = 0; n < MCP2210_RES_BUFFER_SIZE; n++) {
+			if (mcp2210_outputs[subcode][n] != NULL)
+				printf("%02d:%s%d (0x%02X)\n", n, mcp2210_outputs[subcode][n], br[n], br[n]);
+		}
+	}
+	if (ct == UMCPMIO_CHIP_TYPE_2221) {
+		for (int n = 0; n < MCP2221_RES_BUFFER_SIZE; n++) {
+			if (mcp2221_outputs[n] != NULL)
+				printf("%02d:%s%d (0x%02X)\n", n, mcp2221_outputs[n], br[n], br[n]);
+		}
+	}
+}
+
+void
+print_gpio_cfg(struct mcp2221_get_gpio_cfg_res *r)
+{
+	uint8_t *br = (uint8_t *)r;
+
+	const char *outputs[] = {
+		"cmd:\t\t\t",
+		"completion:\t\t",
+		"gp0_pin_value:\t",
+		"gp0_pin_dir:\t\t",
+		"gp1_pin_value:\t",
+		"gp1_pin_dir:\t\t",
+		"gp2_pin_value:\t",
+		"gp2_pin_dir:\t\t",
+		"gp3_pin_value:\t",
+		"gp3_pin_dir:\t\t",
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL,
+		NULL
+	};
+
+	for (int n = 0; n < MCP2221_RES_BUFFER_SIZE; n++) {
+		if (outputs[n] != NULL)
+			printf("%02d:%s%d (0x%02X)\n", n, outputs[n], br[n], br[n]);
+	}
+}
+
+void
+print_flash(uint8_t *br, int subcode, uint8_t ct)
+{
+	const char *mcp2210_outputs1[] = {
+		"cmd:\t\t\t\t",
+		"completion:\t\t\t",
+		"subcode:\t\t\t",
+		NULL
+	};
+
+	const char *mcp2210_outputs2[][64] = {
+		{
+			"gp0_designation:\t\t\t",
+			"gp1_designation:\t\t\t",
+			"gp2_designation:\t\t\t",
+			"gp3_designation:\t\t\t",
+			"gp4_designation:\t\t\t",
+			"gp5_designation:\t\t\t",
+			"gp6_designation:\t\t\t",
+			"gp7_designation:\t\t\t",
+			"gp8_designation:\t\t\t",
+			"default_output_lsb:\t\t\t",
+			"default_output_msb:\t\t\t",
+			"default_direction_lsb:\t\t\t",
+			"default_direction_msb:\t\t\t",
+			"other_settings:\t\t\t",
+			"nvram_protection:\t\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		},
+		{
+			NULL
+		},
+		{
+			"always0x03:\t\t\t\t",
+			"unicode_man_descriptor"
+		},
+		{
+			"always0x03:\t\t\t\t\t",
+			"unicode_product_descriptor"
+		},
+		{
+			NULL
+		},
+		{
+			NULL
+		},
+		{
+			"bit_rate_byte_3:\t\t\t",
+			"bit_rate_byte_2:\t\t\t",
+			"bit_rate_byte_1:\t\t\t",
+			"bit_rate_byte_0:\t\t\t",
+			"idle_cs_value_lsb:\t\t\t",
+			"idle_cs_value_msb:\t\t\t",
+			"active_cs_value_lsb:\t\t\t",
+			"active_cs_value_msb:\t\t\t",
+			"cs_to_data_delay_lsb:\t\t\t",
+			"cs_to_data_delay_msb:\t\t\t",
+			"lb_to_cs_deassert_delay_lsb:\t\t\t",
+			"lb_to_cs_deassert_delay_msb:\t\t\t",
+			"delay_between_bytes_lsb:\t\t\t",
+			"delay_between_bytes_msb:\t\t\t",
+			"bytes_per_spi_transaction_lsb:\t\t\t",
+			"bytes_per_spi_transaction_msb:\t\t\t",
+			"spi_mode:\t\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		},
+		{
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			"lsb_usb_vid:\t\t\t",
+			"msb_usb_vid:\t\t\t",
+			"lsb_usb_pid:\t\t\t",
+			"msb_usb_pid:\t\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			"usb_power_attributes:\t\t\t",
+			"usb_requested_ma:\t\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		}
+	};
+
+	const char *mcp2221_outputs1[] = {
+		"cmd:\t\t\t\t",
+		"completion:\t\t\t",
+		"res_len:\t\t\t"
+	};
+
+	const char *mcp2221_outputs2[][64] = {
+		{
+			NULL,
+			"uartenum_led_protection:\t",
+			"clock_divider:\t\t",
+			"dac_reference_voltage:\t",
+			"irq_adc_reference_voltage:\t",
+			"lsb_usb_vid:\t\t\t",
+			"msb_usb_vid:\t\t\t",
+			"lsb_usb_pid:\t\t\t",
+			"msb_usb_pid:\t\t\t",
+			"usb_power_attributes:\t",
+			"usb_requested_ma:\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		},
+		{
+			NULL,
+			"gp0_settings:\t\t",
+			"gp1_settings:\t\t",
+			"gp2_settings:\t\t",
+			"gp3_settings:\t\t",
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL,
+			NULL
+		},
+		{
+			"always0x03:\t\t\t\t",
+			"unicode_man_descriptor"
+		},
+		{
+			"always0x03:\t\t\t\t\t",
+			"unicode_product_descriptor"
+		},
+		{
+			"always0x03:\t\t\t\t",
+			"unicode_serial_number"
+		},
+		{
+			"always0x03:\t\t\t\t",
+			"factory_serial_number"
+		},
+	};
+
+	if (ct == UMCPMIO_CHIP_TYPE_2210) {
+		if (subcode == 1)
+			subcode = 0;
+		int n = 0;
+		for (; n <= 3; n++) {
+			if (mcp2210_outputs1[n] != NULL)
+				printf("%02d:%s%d (0x%02X)\n", n, mcp2210_outputs1[n], br[n], br[n]);
+		}
+
+		if (subcode != 2 &&
+		    subcode != 3) {
+			for (; n < MCP2210_RES_BUFFER_SIZE; n++) {
+				if (mcp2210_outputs2[subcode][n - 4] != NULL)
+					printf("%02d:%s%d (0x%02X)\n", n, mcp2210_outputs2[subcode][n - 4], br[n], br[n]);
+			}
+		} else {
+			int c = 1;
+			printf("%02d:%s%d (0x%02X)\n", n, mcp2210_outputs2[subcode][n - 4], br[n], br[n]);
+			n++;
+			for (c = 1; c < MCP2210_RES_BUFFER_SIZE - 4; c++) {
+				printf("%02d:%s%02d:\t\t%d (0x%02X)\n", n, mcp2221_outputs2[subcode][1], c, br[n], br[n]);
+				n++;
+			}
+		}
+	}
+	if (ct == UMCPMIO_CHIP_TYPE_2221) {
+		int n = 0;
+		for (; n <= 2; n++) {
+			if (mcp2221_outputs1[n] != NULL)
+				printf("%02d:%s%d (0x%02X)\n", n, mcp2221_outputs1[n], br[n], br[n]);
+		}
+
+		if (subcode == 0 ||
+		    subcode == 1) {
+			for (; n < MCP2221_RES_BUFFER_SIZE; n++) {
+				if (mcp2221_outputs2[subcode][n - 3] != NULL)
+					printf("%02d:%s%d (0x%02X)\n", n, mcp2221_outputs2[subcode][n - 3], br[n], br[n]);
+			}
+		} else {
+			int c = 1;
+			int l = br[2];
+			printf("%02d:%s%d (0x%02X)\n", n, mcp2221_outputs2[subcode][n - 3], br[n], br[n]);
+			n++;
+			for (c = 1; c <= l; c++) {
+				printf("%02d:%s%02d:\t\t%d (0x%02X)\n", n, mcp2221_outputs2[subcode][1], c, br[n], br[n]);
+				n++;
+			}
+		}
+	}
+}

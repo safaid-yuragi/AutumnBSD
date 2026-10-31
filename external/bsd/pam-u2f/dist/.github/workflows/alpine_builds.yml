@@ -1,0 +1,27 @@
+name: alpine
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    container: alpine:latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cc: [ gcc, clang ]
+    steps:
+    - name: dependencies
+      run: |
+        apk -q update
+        apk add autoconf automake bash build-base clang clang-analyzer git \
+          libfido2-dev libtool linux-pam-dev openssl-dev pkgconfig
+    - name: checkout pam-u2f
+      uses: actions/checkout@v4
+    - name: mark workspace as safe
+      run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+    - name: build
+      env:
+        CC: ${{ matrix.cc }}
+      run: |
+        ./build-aux/ci/build-linux-${CC%-*}.sh

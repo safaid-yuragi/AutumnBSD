@@ -1,0 +1,18 @@
+# $NetBSD: msg_007.ln,v 1.3 2025/02/20 19:04:00 rillig Exp $
+#
+# Test data for message 7 of lint2:
+#	%s has %d parameters in %s, versus %d arguments in %s
+#
+
+
+# # 11 "msg_007_params.c"
+# void params(void) {}
+# void params();
+# void params(double);
+# void params(double, double);
+0 s msg_007_params.c
+S msg_007_params.c
+11 d 0.11 d 6params F0     V
+12 d 0.12 e 6params F      V
+13 d 0.13 e 6params F1 D   V
+14 d 0.14 e 6params F2 D D V

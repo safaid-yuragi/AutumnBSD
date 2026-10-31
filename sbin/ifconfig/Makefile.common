@@ -1,0 +1,27 @@
+#	$NetBSD: Makefile.common,v 1.9 2025/12/22 16:48:48 thorpej Exp $
+
+# shared stuff with src/distrib/utils/x_ifconfig for install media.
+# stuff not required by install media should be into Makefile.
+
+.ifdef SMALLPROG
+CPPFLAGS+=	-DSMALL
+.endif
+
+.if (${MKWLAN} == "no")
+NOIEEE80211=	1
+.endif
+
+DPADD+=		${LIBUTIL} ${LIBPROP}
+LDADD+=		-lutil -lprop
+
+INCS+=		af_inetany.h env.h extern.h media.h parse.h util.h
+SRCS+=		af_inet.c af_inetany.c env.c ether.c \
+		ifconfig.c media.c parse.c tunnel.c util.c vlan.c
+.ifndef	NOIEEE80211
+SRCS+=		ieee80211.c
+.endif
+.ifndef SMALLPROG
+SRCS+=		agr.c l2tp.c lagg.c
+.endif
+
+COPTS.parse.c+=	${CC_WNO_CALLOC_TRANSPOSED_ARGS}

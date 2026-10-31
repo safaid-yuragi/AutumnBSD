@@ -1,0 +1,615 @@
+/*	$NetBSD: machdep.c,v 1.209 2026/04/28 03:29:09 thorpej Exp $	*/
+
+/*
+ * Copyright (c) 1988 University of Utah.
+ * Copyright (c) 1982, 1986, 1990 The Regents of the University of California.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: machdep.c 1.63 91/04/24$
+ *
+ *	@(#)machdep.c	7.16 (Berkeley) 6/3/91
+ */
+
+#include <sys/cdefs.h>
+__KERNEL_RCSID(0, "$NetBSD: machdep.c,v 1.209 2026/04/28 03:29:09 thorpej Exp $");
+
+#include "opt_ddb.h"
+#include "opt_mbtype.h"
+#include "opt_modular.h"
+#include "opt_panicbutton.h"
+
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/signalvar.h>
+#include <sys/kernel.h>
+#include <sys/proc.h>
+#include <sys/buf.h>
+#include <sys/reboot.h>
+#include <sys/conf.h>
+#include <sys/file.h>
+#include <sys/device.h>
+#include <sys/kmem.h>
+#include <sys/mbuf.h>
+#include <sys/msgbuf.h>
+#include <sys/vnode.h>
+#include <sys/queue.h>
+#include <sys/mount.h>
+#include <sys/syscallargs.h>
+#include <sys/ksyms.h>
+#include <sys/module.h>
+#include <sys/intr.h>
+#include <sys/exec.h>
+#include <sys/cpu.h>
+#include <sys/exec_elf.h>
+#include <sys/bus.h>
+
+#include <uvm/uvm_extern.h>
+
+#include <sys/sysctl.h>
+
+#include <machine/db_machdep.h>
+#include <ddb/db_sym.h>
+#include <ddb/db_extern.h>
+
+#include <machine/reg.h>
+#include <machine/psl.h>
+#include <machine/pte.h>
+
+#include <m68k/pcr.h>
+
+#include <dev/cons.h>
+#include <dev/mm.h>
+
+#include "ksyms.h"
+#include "nvr.h"
+
+#define	DEV_NVRAM	11	/* Nvram minor-number */
+
+static void call_sicallbacks(void);
+void	straymfpint(int, u_short);
+
+#ifdef _MILANHW_
+void	nmihandler(void);
+#endif
+
+extern  int   freebufspace;
+extern	u_int lowram;
+
+struct pmap_bootmap machine_bootmap[] = {
+	/* XXX */
+	{ .pmbm_vaddr = -1 },
+};
+
+/*
+ * Console initialization: called early on from main,
+ * before vm init or startup.  Do enough configuration
+ * to choose and initialize a console.
+ */
+void
+consinit(void)
+{
+	int i;
+
+	/*
+	 * Initialize error message buffer. pmap_bootstrap() has
+	 * positioned this at the end of kernel memory segment - map
+	 * and initialize it now.
+	 */
+	extern paddr_t msgbufpa;
+	for (i = 0; i < btoc(MSGBUFSIZE); i++)
+		pmap_kenter_pa((vaddr_t)msgbufaddr + i * PAGE_SIZE,
+		    msgbufpa + i * PAGE_SIZE, VM_PROT_READ|VM_PROT_WRITE, 0);
+	pmap_update(pmap_kernel());
+	initmsgbuf(msgbufaddr, m68k_round_page(MSGBUFSIZE));
+
+	/*
+	 * Initialize hardware that support various console types like
+	 * the grf and PCI busses.
+	 */
+	config_console();
+
+	/*
+	 * Now pick the best console candidate.
+	 */
+	cninit();
+
+#if NKSYMS || defined(DDB) || defined(MODULAR)
+	{
+		extern int end;
+		extern int *esym;
+
+		ksyms_addsyms_elf((int)esym - (int)&end - sizeof(Elf32_Ehdr),
+		    (void *)&end, esym);
+	}
+#endif
+#if defined (DDB)
+	if (boothowto & RB_KDB)
+		Debugger();
+#endif
+}
+
+vsize_t		mem_size;
+
+void
+machine_set_model(void)
+{
+	const char *mach;
+
+	switch (machineid & ATARI_ANYMACH) {
+	case ATARI_TT:
+		mach = "Atari TT";
+		break;
+	case ATARI_FALCON:
+		mach = "Atari Falcon";
+		break;
+	case ATARI_HADES:
+		mach = "Atari Hades";
+		break;
+	case ATARI_MILAN:
+		mach = "Atari Milan";
+		break;
+	default:
+		mach = "Atari UNKNOWN";
+		break;
+	}
+
+	cpu_setmodel("%s", mach);
+}
+
+/*
+ * machine dependent system variables.
+ */
+SYSCTL_SETUP(sysctl_machdep_setup, "sysctl machdep subtree setup")
+{
+
+	sysctl_createv(clog, 0, NULL, NULL,
+		       CTLFLAG_PERMANENT,
+		       CTLTYPE_NODE, "machdep", NULL,
+		       NULL, 0, NULL, 0,
+		       CTL_MACHDEP, CTL_EOL);
+
+	sysctl_createv(clog, 0, NULL, NULL,
+		       CTLFLAG_PERMANENT,
+		       CTLTYPE_STRUCT, "console_device", NULL,
+		       sysctl_consdev, 0, NULL, sizeof(dev_t),
+		       CTL_MACHDEP, CPU_CONSDEV, CTL_EOL);
+}
+
+static vaddr_t	dumpspace;	/* Virt. space to map dumppages	*/
+
+/*
+ * Reserve _virtual_ memory to map in the page to be dumped
+ */
+vaddr_t
+reserve_dumppages(vaddr_t p)
+{
+
+	dumpspace = p;
+	return p + PAGE_SIZE;
+}
+
+uint32_t	dumpmag  = 0x8fca0101;	/* magic number for savecore	*/
+int		dumpsize = 0;		/* also for savecore (pages)	*/
+long		dumplo   = 0;		/* (disk blocks)		*/
+
+void
+cpu_dumpconf(void)
+{
+	int	nblks, i;
+
+	for (i = dumpsize = 0; i < NMEM_SEGS; i++) {
+		if (boot_segs[i].start == boot_segs[i].end)
+			break;
+		dumpsize += boot_segs[i].end - boot_segs[i].start;
+	}
+	dumpsize = btoc(dumpsize);
+
+	if (dumpdev != NODEV) {
+		nblks = bdev_size(dumpdev);
+		if (nblks > 0) {
+			if (dumpsize > btoc(dbtob(nblks - dumplo)))
+				dumpsize = btoc(dbtob(nblks - dumplo));
+			else if (dumplo == 0)
+				dumplo = nblks - btodb(ctob(dumpsize));
+		}
+	}
+	dumplo -= cpu_dumpsize();
+
+	/*
+	 * Don't dump on the first PAGE_SIZE (why PAGE_SIZE?)
+	 * in case the dump device includes a disk label.
+	 */
+	if (dumplo < btodb(PAGE_SIZE))
+		dumplo = btodb(PAGE_SIZE);
+}
+
+/*
+ * Doadump comes here after turning off memory management and
+ * getting on the dump stack, either when called above, or by
+ * the auto-restart code.
+ */
+void
+dumpsys(void)
+{
+	const struct bdevsw *bdev;
+	daddr_t	blkno;		/* Current block to write	*/
+	int	(*dump)(dev_t, daddr_t, void *, size_t);
+				/* Dumping function		*/
+	u_long	maddr;		/* PA being dumped		*/
+	int	segbytes;	/* Number of bytes in this seg.	*/
+	int	segnum;		/* Segment we are dumping	*/
+	int	nbytes;		/* Bytes left to dump		*/
+	int	i, n, error;
+
+	error = segnum = 0;
+	if (dumpdev == NODEV)
+		return;
+	bdev = bdevsw_lookup(dumpdev);
+	if (bdev == NULL)
+		return;
+	/*
+	 * For dumps during autoconfiguration,
+	 * if dump device has already configured...
+	 */
+	if (dumpsize == 0)
+		cpu_dumpconf();
+	if (dumplo <= 0) {
+		printf("\ndump to dev %u,%u not possible\n",
+		    major(dumpdev), minor(dumpdev));
+		return;
+	}
+	printf("\ndumping to dev %u,%u offset %ld\n",
+	    major(dumpdev), minor(dumpdev), dumplo);
+
+#if defined(DDB) || defined(PANICWAIT)
+	printf("Do you want to dump memory? [y]");
+	cnpollc(true);
+	i = cngetc();
+	cnpollc(false);
+	cnputc(i);
+	switch (i) {
+	case 'n':
+	case 'N':
+		return;
+	case '\n':
+		break;
+	default :
+		cnputc('\n');
+	}
+#endif /* defined(DDB) || defined(PANICWAIT) */
+
+	maddr    = 0;
+	segbytes = boot_segs[0].end;
+	blkno    = dumplo;
+	dump     = bdev->d_dump;
+	nbytes   = dumpsize * PAGE_SIZE;
+
+	printf("dump ");
+
+	error = cpu_dump(dump, &blkno);
+	if (!error) {
+		for (i = 0; i < nbytes; i += n, segbytes -= n) {
+			/*
+			 * Skip the hole
+			 */
+			if (segbytes == 0) {
+				segnum++;
+				maddr    = boot_segs[segnum].start;
+				segbytes = boot_segs[segnum].end -
+				    boot_segs[segnum].start;
+			}
+			/*
+			 * Print Mb's to go
+			 */
+			n = nbytes - i;
+			if (n && (n % (1024 * 1024)) == 0)
+				printf_nolog("%d ", n / (1024 * 1024));
+
+			/*
+			 * Limit transfer to PAGE_SIZE
+			 */
+			if (n > PAGE_SIZE)
+				n = PAGE_SIZE;
+
+			/*
+			 * Map to a VA and write it
+			 */
+			if (maddr != 0) { /* XXX kvtop chokes on this	*/
+				pmap_enter(pmap_kernel(), dumpspace, maddr,
+				    VM_PROT_READ, VM_PROT_READ|PMAP_WIRED);
+				pmap_update(pmap_kernel());
+				error = (*dump)(dumpdev, blkno,
+				    (void *)dumpspace, n);
+				if (error)
+					break;
+			}
+
+			maddr += n;
+			blkno += btodb(n);
+		}
+	}
+	switch (error) {
+
+	case ENXIO:
+		printf("device bad\n");
+		break;
+
+	case EFAULT:
+		printf("device not ready\n");
+		break;
+
+	case EINVAL:
+		printf("area improper\n");
+		break;
+
+	case EIO:
+		printf("i/o error\n");
+		break;
+
+	default:
+		printf("succeeded\n");
+		break;
+	}
+	printf("\n\n");
+	delay(5000000);		/* 5 seconds */
+}
+
+void
+straymfpint(int pc, u_short evec)
+{
+
+	printf("unexpected mfp-interrupt (vector offset 0x%x) from 0x%x\n",
+	       evec & 0xFFF, pc);
+}
+
+/*
+ * this is a handy package to have asynchronously executed
+ * function calls executed at very low interrupt priority.
+ * Example for use is keyboard repeat, where the repeat
+ * handler running at splclock() triggers such a (hardware
+ * aided) software interrupt.
+ * Note: the installed functions are currently called in a
+ * LIFO fashion, might want to change this to FIFO
+ * later.
+ *
+ * XXX: Some of functions which use this callback should be rewritten
+ * XXX: to use MI softintr(9) directly.
+ */
+struct si_callback {
+	struct si_callback *next;
+	void (*function)(void *rock1, void *rock2);
+	void *rock1, *rock2;
+};
+static void *si_callback_cookie;
+static struct si_callback *si_callbacks;
+static struct si_callback *si_free;
+#ifdef DIAGNOSTIC
+static int ncbd;	/* number of callback blocks dynamically allocated */
+#endif
+
+void
+init_sicallback(void)
+{
+
+	si_callback_cookie = softint_establish(SOFTINT_NET,
+	    (void (*)(void *))call_sicallbacks, NULL);
+}
+
+void
+add_sicallback(void (*function)(void *, void *), void *rock1, void *rock2)
+{
+	struct si_callback *si;
+	int s;
+
+	/*
+	 * this function may be called from high-priority interrupt handlers.
+	 * We may NOT block for  memory-allocation in here!.
+	 */
+	s = splhigh();
+	if ((si = si_free) != NULL)
+		si_free = si->next;
+	splx(s);
+
+	if (si == NULL) {
+		si = kmem_intr_alloc(sizeof(*si), KM_NOSLEEP);
+#ifdef DIAGNOSTIC
+		if (si)
+			++ncbd;		/* count # dynamically allocated */
+#endif
+		if (si == NULL)
+			return;
+	}
+
+	si->function = function;
+	si->rock1    = rock1;
+	si->rock2    = rock2;
+
+	s = splhigh();
+	si->next     = si_callbacks;
+	si_callbacks = si;
+	splx(s);
+
+	/*
+	 * and cause a software interrupt (spl1). This interrupt might
+	 * happen immediately, or after returning to a safe enough level.
+	 *
+	 * XXX:
+	 * According to <machine/scu.h> and lev1intr() handler in locore.s,
+	 * at least _ATARIHW_ machines (ATARITT and HADES?) seem to have
+	 * some hardware support which can initiate real hardware interrupt
+	 * at ipl 1 for software interrupt. But as per <machine/mtpr.h>,
+	 * this feature was not used at all on setsoft*() calls and
+	 * traditional hp300 derived ssir (simulated software interrupt
+	 * request) on VAX REI emulation in locore.s is used.
+	 */
+	softint_schedule(si_callback_cookie);
+}
+
+void
+rem_sicallback(void (*function)(void *rock1, void *rock2))
+{
+	struct si_callback *si, *psi, *nsi;
+	int s;
+
+	s = splhigh();
+	for (psi = 0, si = si_callbacks; si; ) {
+		nsi = si->next;
+
+		if (si->function != function)
+			psi = si;
+		else {
+			si->next = si_free;
+			si_free  = si;
+			if (psi != NULL)
+				psi->next = nsi;
+			else
+				si_callbacks = nsi;
+		}
+		si = nsi;
+	}
+	splx(s);
+}
+
+/* purge the list */
+static void
+call_sicallbacks(void)
+{
+	struct si_callback *si;
+	int s;
+	void *rock1, *rock2;
+	void (*function)(void *, void *);
+
+	do {
+		s = splhigh();
+		if ((si = si_callbacks) != NULL)
+			si_callbacks = si->next;
+		splx(s);
+
+		if (si != NULL) {
+			function = si->function;
+			rock1    = si->rock1;
+			rock2    = si->rock2;
+			s = splhigh();
+			if (si_callbacks)
+				softint_schedule(si_callback_cookie);
+			si->next = si_free;
+			si_free  = si;
+			splx(s);
+
+			/*
+			 * Raise spl for BASEPRI() checks to see
+			 * nested interrupts in some drivers using callbacks
+			 * since modern MI softint(9) doesn't seem to do it
+			 * in !__HAVE_FAST_SOFTINTS case.
+			 *
+			 * XXX: This is just a workaround hack.
+			 *      Each driver should raise spl in its handler
+			 *      to avoid nested interrupts if necessary.
+			 */
+			s = splsoftnet();	/* XXX */
+			function(rock1, rock2);
+			splx(s);
+		}
+	} while (si != NULL);
+#ifdef DIAGNOSTIC
+	if (ncbd) {
+#ifdef DEBUG
+		printf("call_sicallback: %d more dynamic structures\n", ncbd);
+#endif
+		ncbd = 0;
+	}
+#endif
+}
+
+#if defined(DEBUG) && !defined(PANICBUTTON)
+#define PANICBUTTON
+#endif
+
+#ifdef PANICBUTTON
+int panicbutton = 1;	/* non-zero if panic buttons are enabled */
+int crashandburn = 0;
+int candbdelay = 50;	/* give em half a second */
+
+void candbtimer(void);
+
+void
+candbtimer(void)
+{
+
+	crashandburn = 0;
+}
+#endif
+
+#ifdef _MILANHW_
+
+/*
+ * Currently the only source of NMI interrupts on the Milan is the PLX9080.
+ * On access errors to the PCI bus, an NMI is generated. This NMI is shorted
+ * in locore in case of a PCI config cycle to a non-existing address to allow
+ * for probes. On other occasions, it ShouldNotHappen(TM).
+ * Note: The handler in locore clears the errors, to make further PCI access
+ * possible.
+ */
+void
+nmihandler(void)
+{
+	extern unsigned long	plx_status;
+
+	printf("nmihandler: plx_status = 0x%08lx\n", plx_status);
+}
+#endif
+
+int
+mm_md_physacc(paddr_t pa, vm_prot_t prot)
+{
+	struct memseg *ms;
+
+	for (ms = boot_segs; ms->start != ms->end; ms++) {
+		if ((pa >= ms->start) && (pa < ms->end))
+			return 0;
+	}
+	return EFAULT;
+}
+
+int
+mm_md_readwrite(dev_t dev, struct uio *uio)
+{
+	switch (minor(dev)) {
+	case DEV_NVRAM:
+#if NNVR > 0
+		return nvram_uio(uio);
+#else
+		return ENXIO;
+#endif
+	default:
+		return ENXIO;
+	}
+}

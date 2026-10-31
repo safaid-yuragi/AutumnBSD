@@ -1,0 +1,9 @@
+# $NetBSD: md.newsmips,v 1.12 2024/07/11 20:41:06 riastradh Exp $
+#
+./usr/mdec/boot					base-sysutil-bin
+./usr/mdec/bootxx				base-sysutil-bin
+./usr/mdec/installboot				base-obsolete		obsolete
+./usr/share/sysinst/catalog/sysinstmsgs.de	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.es	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.fr	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.pl	base-util-share

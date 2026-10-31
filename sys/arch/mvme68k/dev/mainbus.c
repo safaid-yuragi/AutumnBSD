@@ -1,0 +1,258 @@
+/*	$NetBSD: mainbus.c,v 1.27 2026/04/26 18:02:57 thorpej Exp $	*/
+
+/*-
+ * Copyright (c) 2000 The NetBSD Foundation, Inc.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to The NetBSD Foundation
+ * by Steve C. Woodford
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+/*
+ * Derived from the mainbus code in mvme68k/autoconf.c by Chuck Cranor.
+ */
+
+#include <sys/cdefs.h>
+__KERNEL_RCSID(0, "$NetBSD: mainbus.c,v 1.27 2026/04/26 18:02:57 thorpej Exp $");
+
+#include "opt_mvmeconf.h"
+#include "vmetwo.h"
+
+#include <sys/param.h>
+#include <sys/kernel.h>
+#include <sys/systm.h>
+#include <sys/device.h>
+#include <sys/kcore.h>
+
+#define _M68K_BUS_DMA_PRIVATE
+#define _M68K_BUS_SPACE_PRIVATE
+#include <machine/bus.h>
+#undef _M68K_BUS_DMA_PRIVATE
+#undef _M68K_BUS_SPACE_PRIVATE
+#include <machine/cpu.h>
+
+#include <m68k/seglist.h>
+
+#include <mvme68k/dev/mainbus.h>
+
+#if defined(MVME162) || defined(MVME172) || defined(MVME167) || defined(MVME177)
+#if NVMETWO == 0
+#include <dev/vme/vmevar.h>
+#include <dev/mvme/mvmebus.h>
+#include <dev/mvme/vme_twovar.h>
+#endif
+#endif
+
+void mainbus_attach(device_t, device_t, void *);
+int mainbus_match(device_t, cfdata_t, void *);
+int mainbus_print(void *, const char *);
+
+CFATTACH_DECL_NEW(mainbus, 0,
+    mainbus_match, mainbus_attach, NULL, NULL);
+
+struct mainbus_devices {
+	const char *md_name;
+	bus_addr_t md_offset;
+};
+
+#ifdef MVME147
+static struct mainbus_devices mainbusdevs_147[] = {
+	{"pcc", MAINBUS_PCC_OFFSET},
+	{"timekeeper", MAINBUS_TK147_OFFSET},
+	{NULL, 0}
+};
+#endif
+
+#if defined(MVME162) || defined(MVME167) || defined(MVME172) || defined(MVME177)
+static struct mainbus_devices mainbusdevs_1x7[] = {
+	{"pcctwo", MAINBUS_PCCTWO_OFFSET},
+	{"vmetwo", MAINBUS_VMETWO_OFFSET},
+	{"timekeeper", MAINBUS_TIMEKEEPER_OFFSET},
+	{NULL, 0}
+};
+#endif
+
+static int
+mvme68k_bus_dmamem_alloc(bus_dma_tag_t t, bus_size_t size, bus_size_t alignment,
+    bus_size_t boundary, bus_dma_segment_t *segs, int nsegs, int *rsegs,
+    int flags)
+{
+	extern paddr_t avail_start, avail_end;
+	bus_addr_t high;
+
+	if (flags & BUS_DMA_ONBOARD_RAM) {
+		high = phys_seg_list[0].ps_avail_end;
+	} else {
+		high = avail_end;
+	}
+
+	return _bus_dmamem_alloc_common(t, avail_start, high,
+	    size, alignment, boundary, segs, nsegs, rsegs, flags);
+}
+
+struct m68k_bus_dma_tag _mainbus_dma_tag = {
+	NULL,
+	0,
+	_bus_dmamap_create,
+	_bus_dmamap_destroy,
+	_bus_dmamap_load_direct,
+	_bus_dmamap_load_mbuf_direct,
+	_bus_dmamap_load_uio_direct,
+	_bus_dmamap_load_raw_direct,
+	_bus_dmamap_unload,
+	_bus_dmamap_sync,
+	mvme68k_bus_dmamem_alloc,
+	_bus_dmamem_free,
+	_bus_dmamem_map,
+	_bus_dmamem_unmap,
+	_bus_dmamem_mmap
+};
+
+/* ARGSUSED */
+int
+mainbus_match(device_t parent, cfdata_t cf, void *args)
+{
+	static int mainbus_matched;
+
+	if (mainbus_matched)
+		return 0;
+
+	return (mainbus_matched = 1);
+}
+
+/* ARGSUSED */
+void
+mainbus_attach(device_t parent, device_t self, void *args)
+{
+	struct mainbus_attach_args ma;
+	struct mainbus_devices *devices;
+	int i;
+
+	printf("\n");
+
+	/*
+	 * Attach children appropriate for this CPU.
+	 */
+	switch (machineid) {
+#ifdef MVME147
+	case MVME_147:
+		devices = mainbusdevs_147;
+		break;
+#endif
+
+#if defined(MVME162) || defined(MVME167) || defined(MVME172) || defined(MVME177)
+	case MVME_162:
+	case MVME_167:
+	case MVME_172:
+	case MVME_177:
+		devices = mainbusdevs_1x7;
+		break;
+#endif
+
+	default:
+		panic("mainbus_attach: impossible CPU type");
+	}
+
+	for (i = 0; devices[i].md_name != NULL; ++i) {
+		/*
+		 * On mvme162 and up, if the kernel config file had no vmetwo0
+		 * device, we have to do some manual initialisation on the
+		 * VMEChip2 to get local interrupts working (ABORT switch,
+		 * hardware assisted soft interrupts).
+		 */
+#if defined(MVME162) || defined(MVME172) || defined(MVME167) || defined(MVME177)
+#if NVMETWO == 0
+		if (devices[i].md_offset == MAINBUS_VMETWO_OFFSET
+#if defined(MVME147)
+		    && machineid != MVME_147
+#endif
+		    ) {
+			(void)vmetwo_probe(&m68k_simple_bus_space,
+			    intiobase_phys + MAINBUS_VMETWO_OFFSET);
+			continue;
+		}
+#endif
+#endif
+		ma.ma_name = devices[i].md_name;
+		ma.ma_dmat = &_mainbus_dma_tag;
+		ma.ma_bust = &m68k_simple_bus_space;
+		ma.ma_offset = devices[i].md_offset + intiobase_phys;
+
+		(void)config_found(self, &ma, mainbus_print, CFARGS_NONE);
+	}
+
+
+	/*
+	 * Attach the memory controllers on mvme162->mvme177.
+	 * Note: These *must* be attached after the PCCChip2/MCChip.
+	 * They must also be attached *after* the VMEchip2 has been
+	 * initialised (either by the driver, or the vmetwo_probe()
+	 * call above).
+	 */
+#if defined(MVME162) || defined(MVME172) || defined(MVME167) || defined(MVME177)
+#if defined(MVME147)
+	if (machineid != MVME_147)
+#endif
+	{
+		ma.ma_name = "memc";
+		ma.ma_dmat = &_mainbus_dma_tag;
+		ma.ma_bust = &m68k_simple_bus_space;
+		ma.ma_offset = MAINBUS_MEMC1_OFFSET + intiobase_phys;
+		(void)config_found(self, &ma, mainbus_print, CFARGS_NONE);
+		ma.ma_offset = MAINBUS_MEMC2_OFFSET + intiobase_phys;
+		(void)config_found(self, &ma, mainbus_print, CFARGS_NONE);
+	}
+#endif
+
+	/*
+	 * Attach Industry Pack modules on mvme162 and mvme172
+	 */
+#if defined(MVME162) || defined(MVME172)
+#if defined(MVME147) || defined(MVME167) || defined(MVME177)
+	if (machineid == MVME_162 || machineid == MVME_172)
+#endif
+	{
+		ma.ma_name = "ipack";
+		ma.ma_dmat = &_mainbus_dma_tag;
+		ma.ma_bust = &m68k_simple_bus_space;
+		ma.ma_offset = MAINBUS_IPACK_OFFSET + intiobase_phys;
+		(void)config_found(self, &ma, mainbus_print, CFARGS_NONE);
+	}
+#endif
+}
+
+int
+mainbus_print(void *aux, const char *cp)
+{
+	struct mainbus_attach_args *ma;
+
+	ma = aux;
+
+	if (cp)
+		aprint_normal("%s at %s", ma->ma_name, cp);
+
+	aprint_normal(" address 0x%lx", ma->ma_offset);
+
+	return UNCONF;
+}

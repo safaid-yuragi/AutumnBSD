@@ -1,0 +1,724 @@
+/*	$NetBSD: locore.s,v 1.168 2026/04/28 03:29:10 thorpej Exp $	*/
+
+/*
+ * Copyright (c) 1988 University of Utah.
+ * Copyright (c) 1980, 1990, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: locore.s 1.66 92/12/22$
+ *
+ *	@(#)locore.s	8.6 (Berkeley) 5/27/94
+ */
+
+#include "opt_compat_netbsd.h"
+#include "opt_compat_sunos.h"
+#include "opt_fpsp.h"
+#include "opt_ddb.h"
+#include "opt_kgdb.h"
+#include "opt_lockdebug.h"
+#include "opt_m68k_arch.h"
+#include "opt_mvmeconf.h"
+
+#include "assym.h"
+#include <machine/asm.h>
+#include <machine/trap.h>
+
+#include "ksyms.h"
+
+/*
+ * Temporary stack for a variety of purposes.
+ * Try and make this the first thing is the data segment so it
+ * is page aligned.  Note that if we overflow here, we run into
+ * our text segment.
+ */
+	.data
+	.space	PAGE_SIZE
+ASGLOBAL(tmpstk)
+
+/*
+ * Macro to relocate a symbol, used before MMU is enabled.
+ */
+#define	_RELOC(var, ar)		\
+	lea	var,ar
+
+#define	RELOC(var, ar)		_RELOC(_C_LABEL(var), ar)
+#define	ASRELOC(var, ar)	_RELOC(_ASM_LABEL(var), ar)
+
+/*
+ * Macro to call into the Bug ROM monitor
+ */
+#define	CALLBUG(func)	\
+	trap #15; .short func
+
+/*
+ * Initialization
+ *
+ * The bootstrap loader loads us in starting at 0, and VBR is non-zero.
+ * On entry, args on stack are boot device, boot filename, console unit,
+ * boot flags (howto), boot device name, filesystem type name.
+ */
+BSS(lowram,4)
+BSS(esym,4)
+
+	.globl	_C_LABEL(edata)
+	.globl	_C_LABEL(etext),_C_LABEL(end)
+
+
+/*
+ * This is for kvm_mkdb, and should be the address of the beginning
+ * of the kernel text segment (not necessarily the same as kernbase).
+ */
+	.text
+GLOBAL(kernel_text)
+
+/*
+ * start of kernel and .text!
+ */
+ASENTRY_NOPROFILE(start)
+	movw	#PSL_HIGHIPL,%sr	| no interrupts
+	movl	#0,%a5			| RAM starts at 0 (a5)
+	movl	%sp@(4), %d7		| get boothowto
+	movl	%sp@(8), %d6		| get bootaddr
+	movl	%sp@(12),%d5		| get bootctrllun
+	movl	%sp@(16),%d4		| get bootdevlun
+	movl	%sp@(20),%d3		| get bootpart
+	movl	%sp@(24),%d2		| get esyms
+
+	RELOC(bootpart,%a0)
+	movl	%d3, %a0@		| save bootpart
+	RELOC(bootdevlun,%a0)
+	movl	%d4, %a0@		| save bootdevlun
+	RELOC(bootctrllun,%a0)
+	movl	%d5, %a0@		| save booctrllun
+	RELOC(bootaddr,%a0)
+	movl	%d6, %a0@		| save bootaddr
+	RELOC(boothowto,%a0)
+	movl	%d7, %a0@		| save boothowto
+	/* note: d3-d7 free, d2 still in use */
+
+	ASRELOC(tmpstk, %a0)
+	movl	%a0,%sp			| give ourselves a temporary stack
+
+	RELOC(edata,%a0)		| clear out BSS
+	movl	#_C_LABEL(end) - 4, %d0	| (must be <= 256 kB)
+	subl	#_C_LABEL(edata), %d0
+	lsrl	#2,%d0
+1:	clrl	%a0@+
+	dbra	%d0,1b
+
+	RELOC(esym, %a0)
+	movl	%d2,%a0@		| store end of symbol table
+	/* d2 now free */
+	RELOC(lowram, %a0)
+	movl	%a5,%a0@		| store start of physical memory
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| clear and disable on-chip cache(s)
+
+	/* ask the Bug what we are... */
+	clrl	%sp@-
+	CALLBUG(MVMEPROM_GETBRDID)
+	movl	%sp@+,%a1
+
+	/* copy to a struct mvmeprom_brdid */
+	movl	#MVMEPROM_BRDID_SIZE,%d0
+	RELOC(boardid,%a0)
+1:	movb	%a1@+,%a0@+
+	subql	#1,%d0
+	jbne	1b
+
+	/*
+	 * Grab the model number from _boardid and use the value
+	 * to setup machineid, cputype, and mmutype.
+	 */
+	clrl	%d0
+	RELOC(boardid,%a1)
+	movw	%a1@(MVMEPROM_BRDID_MODEL_OFFSET),%d0
+	RELOC(machineid,%a0)
+	movl	%d0,%a0@
+
+	ASRELOC(Lbrdid2mach,%a0)
+Lbrdmatch:
+	/*
+	 * Board type entries look like:
+	 *
+	 *	.word	board-id	|  2
+	 *	.word	cpu-type	| +2
+	 *	.word	mmu-type	| +2
+	 *	.word	fpu-type	| +2
+	 *	.long	init-func	| +4 --> 12 bytes
+	 *
+	 * We advance past the board ID when we compare it, meaning that
+	 * we have 10 bytes to skip if we don't get a match.
+	 */
+	cmpw	%a0@+,%d0
+	jbeq	Lgotmatch
+	addw	#10,%a0	
+	tstw	%a0@
+	jbne	Lbrdmatch
+
+	/*
+	 * If we fall to here, the board is not supported.
+	 * Print a warning, then drop out to the Bug.
+	 */
+	movl	#Lenotconf,%sp@-
+	movl	#Lnotconf,%sp@-
+	CALLBUG(MVMEPROM_OUTSTRCRLF)
+	addql	#8,%sp			| clean up stack after call
+
+	CALLBUG(MVMEPROM_EXIT)
+	/* NOTREACHED */
+
+	.data
+Lnotconf:
+	.ascii	"Sorry, the kernel isn't configured for this model."
+Lenotconf:
+	.even
+
+ASLOCAL(Lbrdid2mach)
+#ifdef MVME147
+	.word	MVME_147
+	.word		CPU_68030
+	.word		MMU_68030
+	.word		FPU_68882
+	.long		Linit147
+#endif
+#ifdef MVME162
+	.word	MVME_162
+	.word		CPU_68040
+	.word		MMU_68040
+	.word		FPU_68040
+	.long		Linit1x2
+#endif
+#ifdef MVME167
+	.word	MVME_167
+	.word		CPU_68040
+	.word		MMU_68040
+	.word		FPU_68040
+	.long		Linit1x7
+#endif
+#ifdef MVME172
+	.word	MVME_172
+	.word		CPU_68060
+	.word		MMU_68040
+	.word		FPU_68060
+	.long		Linit1x2
+#endif
+#ifdef MVME177
+	.word	MVME_177
+	.word		CPU_68060
+	.word		MMU_68040
+	.word		FPU_68060
+	.long		Linit1x7
+#endif
+	.word	0
+	.text
+	.even
+
+/*
+ * We have a match, so the kernel should support this board.
+ * a0 points to the matching entry in Lbrdid2mach.
+ */
+Lgotmatch:
+	movew	%a0@+,%d1		| Copy the CPU type
+	extl	%d1
+	RELOC(cputype,%a1)
+	movel	%d1,%a1@
+
+	movew	%a0@+,%d1		| Copy the MMU type
+	extl	%d1
+	RELOC(mmutype,%a1)
+	movel	%d1,%a1@
+
+	movew	%a0@+,%d1		| Copy the FPU type
+	extl	%d1
+	RELOC(fputype,%a1)
+	movel	%d1,%a1@
+
+	movel	%a0@,%a0		| Finally, the board-specific init code
+	jmp	%a0@
+
+
+#ifdef MVME147
+Linit147:
+	/* MVME-147 - 68030 CPU/MMU, 68882 FPU */
+	/* XXXCDC SHUTUP 147 CALL */
+	movb	#0, 0xfffe1026		| serial interrupt off
+	movb	#0, 0xfffe1018		| timer 1 off
+	movb	#0, 0xfffe1028		| ethernet off
+	/* XXXCDC SHUTUP 147 CALL */
+
+	/* Save our ethernet address */
+	RELOC(mvme_ea, %a0)
+	lea	0xfffe0778,%a1		| XXXCDC -- HARDWIRED HEX
+	movb	#0x08,%a0@+
+	clrb	%a0@+
+	movb	#0x3e,%a0@+
+	movql	#0x0f,%d0
+	andb	%a1@+,%d0
+	orb	#0x20,%d0
+	movb	%d0,%a0@+
+	movb	%a1@+,%a0@+
+	movb	%a1@,%a0@
+
+	/*
+	 * Fix up the physical addresses of the MVME147's onboard
+	 * I/O registers.
+	 */
+	RELOC(intiobase_phys, %a0);
+	movl	#INTIOBASE147,%a0@
+	RELOC(intiosize, %a0);
+	movl	#INTIOSIZE147,%a0@
+
+	/* initialise list of physical memory segments for pmap_bootstrap */
+	RELOC(phys_seg_list, %a0)
+	movl	%a5,%a0@(PS_START)	| phys_seg_list[0].ps_start
+	movl	0xfffe0774,%d1		| End + 1 of onboard memory
+	movl	%d1,%a0@(PS_END)	| phys_seg_list[0].ps_end
+
+	/* offboard RAM */
+	lea	%a0@(SIZEOF_PHYSSEGLIST),%a0
+	clrl	%a0@(PS_START)		| phys_seg_list[1].ps_start
+	movl	#PAGE_SIZE-1,%d0
+	addl	0xfffe0764,%d0		| Start of offboard segment
+	andl	#-PAGE_SIZE,%d0		| Round up to page boundary
+	jbeq	Lsavmaxmem		| Jump if none defined
+	movl	#PAGE_SIZE,%d1		| Note: implicit '+1'
+	addl	0xfffe0768,%d1		| End of offboard segment
+	andl	#-PAGE_SIZE,%d1		| Round up to page boundary
+	cmpl	%d1,%d0			| Quick and dirty validity check
+	jbcs	Loff_ok			| Yup, looks good.
+	RELOC(phys_seg_list, %a0)
+	movel	%a0@(PS_END),%d1	| Just use onboard RAM otherwise
+	jbra	Lsavmaxmem
+Loff_ok:
+	movl	%d0,%a0@(PS_START)	| phys_seg_list[1].ps_start
+	movl	%d1,%a0@(PS_END)	| phys_seg_list[1].ps_end
+
+	/*
+	 * Offboard RAM needs to be cleared to zero to initialise parity
+	 * on most VMEbus RAM cards. Without this, some cards will buserr
+	 * when first read.
+	 */
+	movel	%d0,%a0			| offboard start address again.
+Lclearoff:
+	clrl	%a0@+			| zap a word
+	cmpl	%a0,%d1			| reached end?
+	jbne	Lclearoff
+	jra	Lsavmaxmem		| save maxmem and continue with boot
+#endif
+
+#if defined(MVME162) || defined(MVME172)
+Linit1x2:
+	/* MVME-162 - 68040 CPU/MMU/FPU */
+	/* MVME-172 - 68060 CPU/MMU/FPU */
+
+	/*
+	 * Verify the user has removed the GPIO#0 jumper...
+	 */
+	btst	#0,0xfff4202d		| Clear == jumper installed
+	jne	1f			| Ok.
+
+	movl	#Le1x2jump,%sp@-
+	movl	#L1x2jump,%sp@-
+	CALLBUG(MVMEPROM_OUTSTRCRLF)
+	addql	#8,%sp			| clean up stack after call
+
+	CALLBUG(MVMEPROM_EXIT)
+	/* NOTREACHED */
+
+1:
+	/*
+	 * Determine if this board has a VMEchip2
+	 */
+	btst	#1,0xfff4202e		| VMEchip2 presence detect
+	jne	2f			| Jump if it doesn't exist.
+
+	/*
+	 * Disable all interrupts from VMEchip2. This is especially
+	 * useful when the kernel doesn't have the VMEchip2 driver
+	 * configured. If we didn't do this, then we're at the mercy
+	 * of whatever VMEchip2 interrupts the ROM set up. For example,
+	 * hitting the ABORT switch could kill the system...
+	 */
+	movl	0xfff40088,%d0
+	andl	#0xff7fffff,%d0		| Clear 'MIEN'
+	movl	%d0,0xfff40088
+2:
+	/*
+	 * Determine how much onboard memory is installed
+	 */
+	movql	#0x07,%d0
+	andb	0xfff42024,%d0
+	ASRELOC(Ldramsize1x2,%a0)
+	movl	%a0@(%d0:w:4),%d1	| Lookup the size
+	jeq	Lmemcquery		| Assume a MEMC chip if this is zero.
+	jra	Lis1xx_common
+
+	.data
+	.even
+	/*
+	 * Table of DRAM register size values -> actual size in bytes
+	 */
+ASLOCAL(Ldramsize1x2)
+	.long	0x00100000
+	.long	0x00200000
+	.long	0x00000000
+	.long	0x00400000
+	.long	0x00400000
+	.long	0x00800000
+	.long	0x00000000
+	.long	0x01000000
+
+L1x2jump:
+	.ascii	"You must remove the jumper from pins 15-16 of J22 (mvme162)"
+	.ascii	"or pins 1-2\015\012"
+	.ascii	"J11 (mvme162-LX) first! See NetBSD/mvme68k FAQ for details."
+Le1x2jump:
+	.even
+
+	.text
+#endif
+
+#if defined(MVME167) || defined(MVME177)
+Linit1x7:
+	/* MVME-167 - 68040 CPU/MMU/FPU */
+	/* MVME-177 - 68060 CPU/MMU/FPU */
+
+	/*
+	 * Verify the user has removed the GPIO#0 jumper...
+	 */
+	movel	#0x00000001,%d0
+	andl	0xfff40088,%d0		| Clear == jumper installed
+	jne	1f			| Ok.
+
+	movl	#Le1x7jump,%sp@-
+	movl	#L1x7jump,%sp@-
+	CALLBUG(MVMEPROM_OUTSTRCRLF)
+	addql	#8,%sp			| clean up stack after call
+
+	CALLBUG(MVMEPROM_EXIT)
+	/* NOTREACHED */
+
+1:
+	/*
+	 * Disable all interrupts from VMEchip2. This is especially
+	 * useful when the kernel doesn't have the VMEchip2 driver
+	 * configured. If we didn't do this, then we're at the mercy
+	 * of whatever VMEchip2 interrupts the ROM set up. For example,
+	 * hitting the ABORT switch could kill the system...
+	 */
+	movl	0xfff40088,%d0
+	andl	#0xff7fffff,%d0		| Clear 'MIEN'
+	movl	%d0,0xfff40088
+
+	.data
+	.even
+L1x7jump:
+	.ascii	"You must remove the jumper from pins 1-2 of J1!\015\012"
+	.ascii	"See NetBSD/mvme68k FAQ for details."
+Le1x7jump:
+	.even
+
+	.text
+#endif
+
+#if defined(MVME162) || defined(MVME167) || defined(MVME172) || defined(MVME177)
+Lmemcquery:
+	/*
+	 * Figure out the size of onboard DRAM by querying
+	 * the memory controller ASIC(s)
+	 */
+	lea	0xfff43008,%a0		| MEMC040/MEMECC Controller #1
+	jbsr	memc040read
+	movl	%d0,%d1
+
+	lea	0xfff43108,%a0		| MEMC040/MEMECC Controller #2
+	jbsr	memc040read
+	addl	%d0,%d1
+
+Lis1xx_common:
+	/* Save our ethernet address */
+	RELOC(mvme_ea, %a0)
+	lea	0xfffc1f2c,%a1
+	movb	%a1@+,%a0@+
+	movb	%a1@+,%a0@+
+	movb	%a1@+,%a0@+
+	movb	%a1@+,%a0@+
+	movb	%a1@+,%a0@+
+	movb	%a1@,%a0@
+
+	/*
+	 * Fix up the physical addresses of the onboard
+	 * I/O registers.
+	 */
+	RELOC(intiobase_phys, %a0);
+	movl	#INTIOBASE1xx,%a0@
+	RELOC(intiosize, %a0);
+	movl	#INTIOSIZE1xx,%a0@
+
+	/*
+	 * Initialise first physical memory segment with onboard RAM details
+	 */
+	RELOC(phys_seg_list, %a0)
+	movl	%a5,%a0@(PS_START)	| phys_seg_list[0].ps_start
+	movl	%d1,%a0@(PS_END)	| phys_seg_list[0].ps_end
+
+	/* offboard RAM */
+	lea	%a0@(SIZEOF_PHYSSEGLIST),%a0
+	clrl	%a0@(PS_START)		| phys_seg_list[1].ps_start
+	movl	#PAGE_SIZE-1,%d0
+	addl	0xfffc0000,%d0		| Start of offboard segment
+	andl	#-PAGE_SIZE,%d0		| Round up to page boundary
+	jbeq	Lsavmaxmem		| Jump if none defined
+	movl	#PAGE_SIZE,%d1		| Note: implicit '+1'
+	addl	0xfffc0004,%d1		| End of offboard segment
+	andl	#-PAGE_SIZE,%d1		| Round up to page boundary
+	cmpl	%d1,%d0			| Quick and dirty validity check
+	jbcs	Lramsave1xx		| Yup, looks good.
+	RELOC(phys_seg_list, %a0)
+	movel	%a0@(PS_END),%d1	| Just use onboard RAM otherwise
+	jbra	Lsavmaxmem
+
+Lramsave1xx:
+	movl	%d0,%a0@(PS_START)	| phys_seg_list[1].ps_start
+	movl	%d1,%a0@(PS_END)	| phys_seg_list[1].ps_end
+
+	/*
+	 * Offboard RAM needs to be cleared to zero to initialise parity
+	 * on most VMEbus RAM cards. Without this, some cards will buserr
+	 * when first read.
+	 */
+	movel	%d0,%a0			| offboard start address again.
+Lramclr1xx:
+	clrl	%a0@+			| zap a word
+	cmpl	%a0,%d1			| reached end?
+	jbne	Lramclr1xx
+#endif
+
+Lsavmaxmem:
+	moveq	#PGSHIFT,%d2
+	lsrl	%d2,%d1			| convert to page (click) number
+	RELOC(physmem, %a0)
+	movl	%d1,%a0@		| save into physmem
+
+/*
+ * configure kernel and lwp0 VA space so we can get going
+ */
+#if NKSYMS || defined(DDB) || defined(MODULAR)
+	RELOC(esym,%a0)			| end of static kernel text/data syms
+	movl	%a0@,%a4
+	tstl	%a4
+	jne	Lstart2
+#endif
+	movl	#_C_LABEL(end),%a4	| end of static kernel text/data
+Lstart2:
+	addl	%a5,%a4			| convert to PA
+	pea	%a5@			| reloff
+	pea	%a4@			| nextpa
+	RELOC(pmap_bootstrap1,%a0)
+	jbsr	%a0@			| pmap1_bootstrap1(nextpa, reloff)
+	addql	#8,%sp
+
+	/*
+	 * Updated nextpa returned in %d0.  We need to squirrel
+	 * that away in a callee-saved register to use later,
+	 * after the MMU is enabled.
+	 */
+	movl	%d0, %d7
+
+	/* NOTE: %d7 is now off-limits!! */
+
+/*
+ * Enable the MMU.
+ * Since the kernel is mapped logical == physical, there is no prep
+ * work to do.
+ */
+#include <m68k/m68k/mmu_enable.s>
+
+/*
+ * Should be running mapped from this point on
+ */
+Lmmuenabled:
+	lea	_ASM_LABEL(tmpstk),%sp	| re-load temporary stack
+	jbsr	_C_LABEL(vec_init)	| initialize vector table
+
+	/* phase 2 of pmap setup, returns lwp0 SP in %a0 */
+	jbsr	_C_LABEL(pmap_bootstrap2)
+	movl	%a0,%sp			| now running on lwp0's stack
+	movl	#0,%a6			| terminate the stack back trace
+
+	movl	%d7,%sp@-		| push nextpa saved above
+	jbsr	_C_LABEL(machine_init)	| additional pre-main initialization
+	addql	#4,%sp
+	movw	#PSL_LOWIPL,%sr		| lower SPL
+	jra	_C_LABEL(main)		| main() (never returns)
+
+#if defined(MVME162) || defined(MVME167) || defined(MVME172) || defined(MVME177)
+/*
+ * Probe for a memory controller ASIC (MEMC040 or MEMECC) at the
+ * address in a0. If found, return the size in bytes of any RAM
+ * controlled by the ASIC in d0. Otherwise return zero.
+ */
+ASLOCAL(memc040read)
+	moveml	%d1-%d2/%a1-%a2,%sp@-	| save scratch regs
+	movc	%vbr,%d2		| Save vbr
+	RELOC(vectab,%a2)		| Install our own vectab, temporarily
+	movc	%a2,%vbr
+	ASRELOC(Lmemc040berr,%a1)	| get address of bus error handler
+	movl	%a2@(8),%sp@-		| Save current bus error handler addr
+	movl	%a1,%a2@(8)		| Install our own handler
+	movl	%sp,%d0			| Save current stack pointer value
+	movql	#0x07,%d1
+	andb	%a0@,%d1		| Access MEMC040/MEMECC
+	movl	#0x400000,%d0
+	lsll	%d1,%d0			| Convert to memory size, in bytes
+Lmemc040ret:
+	movc	%d2,%vbr		| Restore original vbr
+	movl	%sp@+,%a2@(8)		| Restore original bus error handler
+	moveml  %sp@+,%d1-%d2/%a1-%a2
+	rts
+/*
+ * If the memory controller doesn't exist, we get a bus error trying
+ * to access a0@ above. Control passes here, where we flag 'no bytes',
+ * ditch the exception frame and return as normal.
+ */
+Lmemc040berr:
+	movl	%d0,%sp			| Get rid of the exception frame
+	movql	#0,%d0			| No ASIC at this location, then!
+	jbra	Lmemc040ret		| Done
+#endif
+
+/*
+ * Handle the nitty-gritty of rebooting the machine.
+ * Basically we just turn off the MMU, restore the Bug's initial VBR
+ * and either return to Bug or jump through the ROM reset vector
+ * depending on how the system was halted.
+ */
+ENTRY_NOPROFILE(machine_reboot)
+	movw	#PSL_HIGHIPL,%sr
+	movl	_C_LABEL(boothowto),%d1	| load howto
+	movl	%sp@(4),%d2		| arg
+	andl	#RB_HALT,%d2		| %d2 == 0 -> autoboot, else halt
+	movl	_C_LABEL(saved_vbr),%d3	| Fetch Bug's original VBR value
+	movl	_C_LABEL(machineid),%d4	| What type of board is this?
+	movl	#CACHE_OFF,%d0
+#if defined(M68040) || defined(M68060)
+	cmpl	#MMU_68040,_C_LABEL(mmutype)	| 68040/68060?
+	jne	Lnocache0		| no, skip
+	.word	0xf4f8			| cpusha bc - push and invalidate caches
+	nop
+	movl	#CACHE40_OFF,%d0
+#endif
+Lnocache0:
+	movc	%d0,%cacr		| disable on-chip cache(s)
+
+#if defined(M68040) || defined(M68060)
+	cmpl	#MMU_68040,_C_LABEL(mmutype)
+	jne	LmotommuF
+	movql	#0,%d0
+	movc	%d0,%cacr
+	.long	0x4e7b0003              | movc d0,tc
+	jra	Lbootcommon
+LmotommuF:
+#endif
+	clrl	%sp@-			| value for pmove to TC (turn off MMU)
+	pmove	%sp@,%tc		| disable MMU
+	addql	#4,%sp
+
+Lbootcommon:
+	/*
+	 * MMU Switched off by now, so relocate all absolute references
+	 */
+	ASRELOC(tmpstk, %sp)		| physical SP in case of NMI
+	movc	%d3,%vbr		| Restore Bug's VBR
+	andl	#RB_SBOOT, %d1		| mask off
+	jbne	Lsboot			| sboot?
+	/* NOT sboot */
+	tstl	%d2			| autoboot?
+	jbeq	Ldoreset		| yes!
+	CALLBUG(MVMEPROM_EXIT)		| return to bug
+	/* NOTREACHED */
+
+Ldoreset:
+	movl	#0xff800000,%a0		| Bug's reset vector address
+	movl	%a0@+, %a7		| get SP
+	movl	%a0@, %a0		| get PC
+	jmp	%a0@			| go!
+
+Lsboot: /* sboot */
+	tstl	%d2			| autoboot?
+	jbeq	1f			| yes!
+	jmp 	0x4000			| back to sboot
+1:	jmp	0x400a			| tell sboot to reboot us
+
+STRONG_ALIAS(machine_halt,machine_reboot)
+
+/*
+ * Misc. global variables.
+ */
+	.data
+
+GLOBAL(machineid)
+	.long	MVME_147	| default to MVME_147
+
+GLOBAL(mmutype)
+	.long	MMU_68030	| default to MMU_68030
+
+GLOBAL(cputype)
+	.long	CPU_68030	| default to CPU_68030
+
+/*
+ * Information from first stage boot program
+ */
+GLOBAL(bootpart)
+	.long	0
+GLOBAL(bootdevlun)
+	.long	0
+GLOBAL(bootctrllun)
+	.long	0
+GLOBAL(bootaddr)
+	.long	0
+
+/*
+ * machine_bootmap[] interleaved with intio*-related variables.
+ * intiobase_phys and intiosize are initialized at run-time.
+ */
+GLOBAL(intiobase)
+	.long	0		| KVA of base of internal IO space
+GLOBAL(machine_bootmap)
+	.long	_C_LABEL(intiobase) | [0].pmbm_vaddr_ptr = &intiobase
+GLOBAL(intiobase_phys)
+	.long	0		| [0].pmbm_paddr = PA of internal I/O space
+GLOBAL(intiosize)
+	.long	0		| [0].pmbm_size = size of internal I/O space
+	.long	PMBM_F_CI	| [0].pmbm_flags = cache-inhibited mapping
+	.long	-1		| [1].pmbm_vaddr = end of list
+

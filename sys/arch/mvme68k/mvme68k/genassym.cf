@@ -1,0 +1,59 @@
+#	$NetBSD: genassym.cf,v 1.54 2026/04/20 09:47:46 thorpej Exp $
+
+#
+# Copyright (c) 1982, 1990, 1993
+#	The Regents of the University of California.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. Neither the name of the University nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+#
+#	@(#)genassym.c	8.3 (Berkeley) 1/4/94
+#
+
+include <machine/cpu.h>
+include <machine/prom.h>
+
+# values for machineid
+define	MVME_147		MVME_147
+define	MVME_162		MVME_162
+define	MVME_166		MVME_166
+define	MVME_167		MVME_167
+define	MVME_172		MVME_172
+define	MVME_177		MVME_177
+
+# boot stuff
+define	RB_SBOOT		RB_SBOOT
+
+# Bug stuff
+define	MVMEPROM_EXIT		MVMEPROM_EXIT
+define	MVMEPROM_GETBRDID	MVMEPROM_GETBRDID
+define	MVMEPROM_OUTSTRCRLF	MVMEPROM_OUTSTRCRLF
+define	MVMEPROM_BRDID_SIZE	sizeof(struct mvmeprom_brdid)
+define	MVMEPROM_BRDID_MODEL_OFFSET	offsetof(struct mvmeprom_brdid, model)
+
+# I/O addresses
+define	INTIOBASE147		INTIOBASE147
+define	INTIOSIZE147		INTIOSIZE147
+define	INTIOBASE1xx		INTIOBASE1xx
+define	INTIOSIZE1xx		INTIOSIZE1xx

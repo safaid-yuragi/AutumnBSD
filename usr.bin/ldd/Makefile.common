@@ -1,0 +1,16 @@
+#	$NetBSD: Makefile.common,v 1.4 2025/10/20 14:31:40 nat Exp $
+
+LDELFSO=${NETBSDSRCDIR}/libexec/ld.elf_so
+CPPFLAGS+= -I${LDELFSO} -DLIBDIR=\"${LIBDIR}\"
+CPPFLAGS+= -D_RTLD_SOURCE
+.if !empty(MACHINE_ARCH:Mearm*)
+CPPFLAGS+= -I${NETBSDSRCDIR}/lib/libexecinfo
+.endif
+#CPPFLAGS+= -DDEBUG
+.PATH: ${LDELFSO}
+
+.if (${MACHINE_ARCH} == "sparc") || (${MACHINE_ARCH} == "sparc64") || \
+    (${MACHINE_ARCH} == "arm") || (${MACHINE_ARCH:S/m68ksf/m68k/} == "m68k") || \
+    (${MACHINE_ARCH} == "powerpc") || (${MACHINE_ARCH:Mmips*} != "")
+CPPFLAGS+= -DVARPSZ
+.endif

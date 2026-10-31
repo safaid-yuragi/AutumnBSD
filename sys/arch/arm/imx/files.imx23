@@ -1,0 +1,75 @@
+# $NetBSD: files.imx23,v 1.10 2026/02/02 06:23:37 skrll Exp $
+#
+# Freescale i.MX23 applications processor configuration info.
+#
+
+defparam opt_imx.h			MEMSIZE
+
+defflag opt_imx.h                               IMX23
+
+# SOC
+defflag	opt_soc.h				SOC_IMX23
+
+file	arch/arm/imx/imx23_platform.c	soc_imx23
+
+file	arch/arm/imx/imx23_space.c	soc_imx23
+file	arch/arm/imx/imx23_dma.c	soc_imx23
+
+# Interrupt controller
+device	imx23icoll: pic, pic_splfuncs
+attach	imx23icoll at fdt
+file	arch/arm/imx/imx23_icoll.c	imx23icoll
+
+# Synchronous Serial Port (for SD/MMC)
+device	imx23mmc: sdmmcbus
+attach	imx23mmc at fdt
+file	arch/arm/imx/imx23_mmc.c	imx23mmc
+
+# Timers and rotary decoder
+device	imx23timrot
+attach	imx23timrot at fdt: fdt_clock
+file	arch/arm/imx/imx23_timrot.c	imx23timrot
+
+# APB{H,X} DMA
+device	imx23apbdma
+attach	imx23apbdma at fdt: fdt_dma
+file	arch/arm/imx/imx23_apbdma.c	imx23apbdma
+
+# USB PHY
+device	imx23usbphy
+attach	imx23usbphy at fdt
+file	arch/arm/imx/imx23_usbphy.c	imx23usbphy
+
+# Digital Control
+device	imx23digctl
+attach	imx23digctl at fdt
+file	arch/arm/imx/imx23_digctl.c	imx23digctl
+
+# PIN Control
+device	imx23pctl: gpiobus
+attach	imx23pctl at fdt
+file	arch/arm/imx/imx23_pinctrl.c	imx23pctl
+
+# Clock Control
+device	imx23clkctrl
+attach	imx23clkctrl at fdt
+file	arch/arm/imx/imx23_clkctrl.c	imx23clkctrl
+
+# USB host controller
+device	imxusbc { [unit=-1], [irq=-1] } : bus_space_generic
+attach	imxusbc at fdt
+file	arch/arm/imx/imx23_usbc.c	imxusbc
+
+# EHCI
+attach	ehci at imxusbc with imxehci
+file	arch/arm/imx/imxusb.c		imxehci
+
+# RTC
+device imx23rtc
+attach imx23rtc at fdt
+file arch/arm/imx/imx23_rtc.c		imx23rtc
+
+# Digital filter: Audio I/O
+device imx23digfilt: audiobus
+attach imx23digfilt at fdt
+file arch/arm/imx/imx23_digfilt.c	imx23digfilt

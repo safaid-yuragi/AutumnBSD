@@ -1,0 +1,8 @@
+# $NetBSD: md.mvmeppc,v 1.12 2024/07/11 20:41:06 riastradh Exp $
+#
+./usr/mdec/boot					base-sysutil-bin
+./usr/mdec/boot.elf				base-sysutil-bin
+./usr/share/sysinst/catalog/sysinstmsgs.de	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.es	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.fr	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.pl	base-util-share

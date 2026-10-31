@@ -1,0 +1,6 @@
+# $NetBSD: md.ia64,v 1.7 2024/07/11 20:41:09 riastradh Exp $
+#
+./@MODULEDIR@/acpiverbose			modules-base-kernel	kmod
+./@MODULEDIR@/acpiverbose/acpiverbose.kmod	modules-base-kernel	kmod
+./@MODULEDIR@/exec_elf64			modules-base-kernel	kmod
+./@MODULEDIR@/exec_elf64/exec_elf64.kmod	modules-base-kernel	kmod

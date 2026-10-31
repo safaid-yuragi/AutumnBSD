@@ -1,0 +1,4 @@
+# $NetBSD: ad.m68k,v 1.20 2024/07/11 20:41:05 riastradh Exp $
+#
+./sbin/edlabel					base-obsolete	obsolete
+./usr/bin/fdformat				base-util-bin

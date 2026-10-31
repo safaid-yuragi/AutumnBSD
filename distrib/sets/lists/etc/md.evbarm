@@ -1,0 +1,3 @@
+# $NetBSD: md.evbarm,v 1.4 2024/07/11 20:41:08 riastradh Exp $
+#
+./etc/ld.so.conf			etc-sys-etc	softfloat

@@ -1,0 +1,156 @@
+#!/bin/sh
+#	$NetBSD: ctwm_app_menu,v 1.8 2026/04/17 11:07:12 nia Exp $
+#
+# Copyright (c) 2020-2026 The NetBSD Foundation, Inc.
+# All rights reserved.
+#
+# This code is derived from software contributed to The NetBSD Foundation
+# by Nia Alarie.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+#
+# THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+# ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+# TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+# PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+# BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+# CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+# SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+# INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+# CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+# ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+# POSSIBILITY OF SUCH DAMAGE.
+#
+set -eu -o pipefail
+
+LOCALBASE=$(pkg_info -Q LOCALBASE pkg_install 2>/dev/null) ||
+    LOCALBASE=/usr/pkg
+
+find "$LOCALBASE"/share/applications -name '*.desktop' -exec awk '
+	function resetentry() {
+		name = menu = exec = ""
+		terminal = nodisplay = 0
+	}
+	function printentry() {
+		if (nodisplay)
+			return
+		if (terminal)
+			exec = "xterm -class UXTerm -e " exec
+		if (!menu)
+			menu = "Misc"
+		printf "%02d\t%s\t%s\t%s\n", menuorder[menu], quote(menu),
+		    quote(" " name), "!" quote(exec " &")
+	}
+
+	function quote(s) {
+		gsub(/\\/, "\\\\", s)
+		gsub(/\"/, "\\\"", s)
+		gsub(/\t/, "\\t", s)
+		return "\"" s "\""
+	}
+
+	function iskey(k, loc1) {
+		loc1 = $0;
+		sub(/ *=.*$/, "", loc1);
+		return loc1 == k;
+	}
+
+	function value(v) {
+		v = $0;
+		sub(/^[^=]*= */, "", v);
+		return v;
+	}
+
+	BEGIN {
+		menuno = 0
+		menuorder["Accessories"] = menuno++
+		menuorder["Games"] = menuno++
+		menuorder["Graphics"] = menuno++
+		menuorder["Internet"] = menuno++
+		menuorder["Multimedia"] = menuno++
+		menuorder["Office"] = menuno++
+		menuorder["Programming"] = menuno++
+		menuorder["System"] = menuno++
+		menuorder["Misc"] = menuno++
+		for (menu in menuorder)
+			printf "%02d\t%s\n", menuorder[menu], quote(menu)
+
+		# Map from matching category to menu.  This is a
+		# partial substring match: if the right-hand side of
+		# a Categories= line matches a key here, we take the
+		# corresponding menu.  So, e.g., any desktop file with
+		# a "X-GNOME-SystemSettings" category matches "System".
+		catmenu["Audio"] = "Multimedia"
+		catmenu["Development"] = "Programming"
+		catmenu["Game"] = "Games"
+		catmenu["Graphics"] = "Graphics"
+		catmenu["Network"] = "Internet"
+		catmenu["Office"] = "Office"
+		catmenu["System"] = "System"
+		catmenu["Utility"] = "Accessories"
+
+		# Categories to match, in precedence order: the first
+		# matching category in this list is the one which we
+		# use to decide the menu.
+		catno = 0
+		catorder[catno++] = "Audio"
+		catorder[catno++] = "Development"
+		catorder[catno++] = "Graphics"
+		catorder[catno++] = "Game"
+		catorder[catno++] = "Office"
+		catorder[catno++] = "Network"
+		catorder[catno++] = "System"
+		catorder[catno++] = "Utility"
+
+		resetentry()
+	}
+
+				{ gsub(/\r/, "") }
+	FNR == 1 && NR > 1	{ printentry() }
+	END			{ printentry() }
+	FNR == 1		{ resetentry() }
+
+	iskey("Name") && !name	{ name = value() }
+	/^Terminal *= *true$/	{ terminal = 1 }
+	iskey("OnlyShowIn")	{ nodisplay = 1 }
+	/^NoDisplay *= *true$/	{ nodisplay = 1 }
+	iskey("Exec") && !exec	{ exec = value()
+				  gsub(/ %.*/, "", exec)
+				  if (exec ~ /\"/)	# XXX
+					nodisplay = 1 }
+	iskey("Categories") && !menu {
+		categories = value()
+		for (i = 0; i < catno; i++) {
+			if (categories ~ catorder[i]) {
+				menu = catmenu[catorder[i]]
+				break
+			}
+		}
+	}
+' '{}' + \
+| sort -u \
+| awk -F '\t' '
+	function startmenu(menu) {
+		printf "menu %s\n", menu
+		printf "{\n"
+		printf "\t%s\tf.title\n", menu
+		curmenu = menu
+	}
+	function endmenu() {
+		if (!curmenu)
+			return
+		printf "}\n"
+	}
+
+	# Inputs: 1=order 2=menu [3=name 4=exec], strings pre-quoted.
+	$2 != curmenu			{ endmenu(); startmenu($2) }
+	NF == 4				{ printf "\t%s %s \n", $3, $4 }
+	END				{ endmenu(); }
+'

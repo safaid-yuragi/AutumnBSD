@@ -1,0 +1,65 @@
+/*	$NetBSD: umcpmioctl.h,v 1.3 2025/11/29 18:39:15 brad Exp $	*/
+
+/*
+ * Copyright (c) 2024 Brad Spencer <brad@anduin.eldar.org>
+ *
+ * Permission to use, copy, modify, and distribute this software for any
+ * purpose with or without fee is hereby granted, provided that the above
+ * copyright notice and this permission notice appear in all copies.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+ * WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+ * MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ * ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+ * WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ * ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+ * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+ */
+
+#ifndef _UMCPMIOCTL_H_
+#define _UMCPMIOCTL_H_
+
+/* Top level commands */
+#define UMCPMIO_GET 1
+#define UMCPMIO_PUT 2
+#define UMCPMIO_STATUS 3
+#define UMCPMIO_SEND 4
+
+/* Second level commands */
+
+#define UMCPMIO_IOCTL_GET_SRAM 1
+#define MCP2221_IOCTL_GET_GP_CFG 2
+#define UMCPMIO_IOCTL_GET_FLASH 3
+#define UMCPMIO_IOCTL_GET_TYPE 4
+
+#define UMCPMIO_IOCTL_PUT_FLASH 1
+
+#define MCP2210_IOCTL_SEND_CANCEL 1
+
+/* Third level commands */
+
+#define UMCPMIO_IOCTL_GET_FLASH_CS 0
+#define UMCPMIO_IOCTL_GET_FLASH_GP 1
+#define UMCPMIO_IOCTL_GET_FLASH_USBMAN 2
+#define UMCPMIO_IOCTL_GET_FLASH_USBPROD 3
+#define UMCPMIO_IOCTL_GET_FLASH_USBSN 4
+#define UMCPMIO_IOCTL_GET_FLASH_CHIPSN 5
+#define UMCPMIO_IOCTL_GET_NVRAM_SPI 6
+#define UMCPMIO_IOCTL_GET_NVRAM_USBKEYPARAMS 7
+
+#define UMCPMIO_IOCTL_PUT_FLASH_GP 1
+#define MCP2210_IOCTL_PUT_NVRAM_SPI 2
+#define MCP2210_IOCTL_PUT_NVRAM_USBKEYPARAMS 3
+
+#define MCP2210_IOCTL_GET_SRAM_GPIO 0
+#define MCP2210_IOCTL_GET_SRAM_GPIO_VAL 1
+#define MCP2210_IOCTL_GET_SRAM_GPIO_DIR 2
+#define MCP2210_IOCTL_GET_SRAM_SPI 3
+
+struct umcpmioctlcmd {
+	const char	*cmd;
+	const int	id;
+	const char	*helpargs;
+};
+
+#endif

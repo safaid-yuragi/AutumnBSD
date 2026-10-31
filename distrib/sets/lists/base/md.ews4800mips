@@ -1,0 +1,7 @@
+# $NetBSD: md.ews4800mips,v 1.7 2024/07/11 20:41:06 riastradh Exp $
+#
+./usr/mdec/boot					base-sysutil-bin
+./usr/mdec/boot.coff				base-sysutil-bin
+./usr/mdec/boot_kernel.gz			base-sysutil-bin
+./usr/mdec/bootxx_bfs				base-sysutil-bin
+./usr/mdec/bootxx_ustarfs			base-sysutil-bin

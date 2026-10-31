@@ -1,0 +1,14 @@
+# $NetBSD: msg_003.ln,v 1.4 2025/02/20 19:04:00 rillig Exp $
+#
+# Test data for message 3 of lint2:
+#	%s has multiple definitions in %s and %s
+
+0 s msg_003_a.c
+S msg_003_a.c
+# msg_003_a.c:10: int function(void);
+10 d 0.10 d 8function F0 I
+
+0 s msg_003_b.c
+S msg_003_b.c
+# msg_003_b.c:10: int function(void);
+10 d 0.10 d 8function F0 I

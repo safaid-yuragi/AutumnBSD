@@ -1,0 +1,125 @@
+.\" $NetBSD: crashme.9,v 1.6 2024/07/24 12:48:17 uwe Exp $
+.\"
+.\" Copyright (c) 2019 Matthew R. Green
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+.\" IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+.\" OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+.\" IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+.\" INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
+.\" BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+.\" LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED
+.\" AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
+.\" OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd January 7, 2019
+.Dt CRASHME 9
+.Os
+.Sh NAME
+.Nm crashme ,
+.Nm crashme_add ,
+.Nm crashme_remove
+.Nd in-kernel testing of crash handling
+.Sh SYNOPSIS
+.In sys/crashme.h
+.Ft int
+.Fn crashme_add "crashme_node *cn"
+.Ft int
+.Fn crashme_remove "crashme_node *cn"
+.Sh DESCRIPTION
+The
+.Nm
+functions provide access to dynamically add and remove crashme nodes.
+These nodes are simply named callbacks that are expected to cause the
+system to crash.
+.Pp
+The crashme functionality is only available in kernels with the
+.Ic options DEBUG
+set in the kernel
+.Xr config 5
+file.
+.Pp
+Each crashme node is maintained in a
+.Vt crashme_node
+structure which has the following public members:
+.Bd -literal -offset indent
+typedef int (*crashme_fn)(int /* flags */);
+
+typedef struct crashme_node {
+        const char     *cn_name;
+        const char     *cn_longname;
+        crashme_fn      cn_fn;
+} crashme_node;
+.Ed
+.Pp
+The
+caller must fill in the
+.Fa cn_name ,
+.Fa cn_longname ,
+and
+.Fa cn_fn
+members.
+.Pp
+The
+.Fa cn_fn
+function is passed
+.Ar flags
+parameter from sysctl.
+It shall return 0 upon success or non zero on failure.
+.Sh SYSCTL SUPPORT
+The following
+.Xr sysctl 8
+variables are provided by the
+.Nm
+subsystem:
+.Bl -tag -offset indent -width Va
+.It Va debug.crashme_enable
+Must be set to 1 for any
+.Nm
+node to be executed.
+.El
+.Pp
+The following
+.Xr sysctl 8
+variables trigger crashes in different ways when written to:
+.Bl -tag -offset indent -width Va
+.It Va debug.crashme.panic
+Call
+.Xr panic 9 .
+.It Va debug.crashme.null_deref
+Dereference a null pointer.
+.It Va debug.crashme.null_jump
+Call a null function pointer, i.e., jump to the instruction address
+zero.
+.It Va debug.crashme.ddb
+Enter
+.Xr ddb 4
+directly by calling
+.Fn Debugger .
+Requires
+.Ic options DDB .
+.El
+.Sh SEE ALSO
+.Xr ddb 4 ,
+.Xr options 4 ,
+.Xr sysctl 8 ,
+.Xr panic 9 .
+.Sh HISTORY
+The
+.Nm
+driver appeared in
+.Nx 9.0 .
+.Sh AUTHORS
+.An Matthew R. Green

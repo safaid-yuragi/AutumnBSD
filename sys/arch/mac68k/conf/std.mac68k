@@ -1,0 +1,20 @@
+#	$NetBSD: std.mac68k,v 1.35 2026/08/16 00:15:00 thorpej Exp $
+#
+# "options" common to all mac68k kernel configs
+
+machine	mac68k m68k
+include		"conf/std"			# MI standard options
+include		"arch/m68k/conf/std.m68k"	# m68k standard options
+
+options 	__HAVE_NEW_PMAP_68K
+
+# All 68k Macs that NetBSD runs on have a Motorola MMU.  For 68030 and 68040,
+# this is inferred from the CPU.  But if the kernel only includes support for
+# 68020, we have to be explicit about it.
+#
+# XXX config(1) needs something like this:
+#
+# ifoption M68020: M68K_MMU_68851
+options 	M68K_MMU_68851
+
+options 	HZ=60			# mac clock runs at 60hz

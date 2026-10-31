@@ -1,0 +1,15 @@
+#	$NetBSD: files.sifive,v 1.4 2025/09/06 15:44:04 thorpej Exp $
+#
+# Configuration info for SiFive SoCs
+#
+#
+
+# FU540 Power Reset Clocking Interrupt (PRCI) subsystem
+device	prci: fdt_clock
+attach	prci at fdt with fu540_prci
+file	arch/riscv/sifive/fu540_prci.c		fu540_prci
+
+# FU540 Level 2 Cache controller
+device	ccache: fdt
+attach	ccache at fdt with fu540_ccache
+file	arch/riscv/sifive/fu540_ccache.c	fu540_ccache

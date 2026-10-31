@@ -1,0 +1,471 @@
+/*	$NetBSD: locore.s,v 1.114 2026/04/28 03:29:10 thorpej Exp $	*/
+
+/*
+ * Copyright (c) 1998 Darrin B. Jewell
+ * Copyright (c) 1980, 1990, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: locore.s 1.66 92/12/22$
+ *
+ *	@(#)locore.s	8.6 (Berkeley) 5/27/94
+ */
+
+/*
+ * Copyright (c) 1994, 1995 Gordon W. Ross
+ * Copyright (c) 1988 University of Utah.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: locore.s 1.66 92/12/22$
+ *
+ *	@(#)locore.s	8.6 (Berkeley) 5/27/94
+ */
+
+/* This is currently amid development by
+ * Darrin Jewell <jewell@mit.edu>  Fri Jan  2 14:36:47 1998
+ * for the next68k port
+ */
+
+#include "opt_compat_netbsd.h"
+#include "opt_compat_sunos.h"
+#include "opt_ddb.h"
+#include "opt_fpsp.h"
+#include "opt_kgdb.h"
+#include "opt_lockdebug.h"
+#include "opt_fpu_emulate.h"
+#include "opt_useleds.h"
+#include "opt_m68k_arch.h"
+
+#include "assym.h"
+#include <machine/asm.h>
+#include <machine/trap.h>
+
+#if (!defined(M68040))
+#error "M68040 is not defined! (check that the generated assym.h is not empty)"
+#endif
+
+#include "ksyms.h"
+
+/*
+ * This is for kvm_mkdb, and should be the address of the beginning
+ * of the kernel text segment (not necessarily the same as kernbase).
+ */
+	.text
+GLOBAL(kernel_text)
+
+ /*
+  * Leave page zero empty so it can be unmapped
+  */
+	.space	PAGE_SIZE
+
+/*
+ * Temporary stack for a variety of purposes.
+ */
+	.data
+GLOBAL(endstack)
+	.space	PAGE_SIZE
+GLOBAL(bgnstack)
+ASGLOBAL(tmpstk)
+
+/*
+ * Macro to relocate a symbol, used before MMU is enabled.
+ * On the NeXT, memory is laid out as in the mach header
+ * so therefore we need to relocate symbols until the MMU
+ * is turned on.
+ */
+#define	_RELOC(var, ar)		\
+	lea	var,ar;		\
+	addl	%a5,ar
+
+#define	RELOC(var, ar)		_RELOC(_C_LABEL(var), ar)
+#define	ASRELOC(var, ar)	_RELOC(_ASM_LABEL(var), ar)
+
+/*
+ * Initialization info as per grossman's boot loader:
+ *
+ * We are called from the boot prom, not the boot loader. We have the
+ * prom's stack initialized for us and we were called like this:
+ * start(mg, mg->mg_console_i, mg->mg_console_o,
+ *       mg->mg_boot_dev, mg->mg_boot_arg, mg->mg_boot_info,
+ *       mg->mg_sid, mg->mg_pagesize, 4, mg->mg_region,
+ *       etheraddr, mg->mg_boot_file);
+ * so we actually only really need the first parameter from the stack.
+ * Exceptions will be handled by the prom until we feel ready to handle
+ * them ourselves.
+ * By the way, we get loaded at our final address i.e. PA==VA for the kernel.
+ */
+ /* I think the PA==VA comment to be a lie, but I have yet to verify it.
+  * Darrin B Jewell <jewell@mit.edu>  Sun Jan 11 01:05:54 1998
+ */
+BSS(lowram,4)
+BSS(esym,4)
+
+ASENTRY_NOPROFILE(start)
+	movw	#PSL_HIGHIPL,%sr	| no interrupts
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| clear and disable on-chip cache(s)
+
+	moveal	#NEXT_RAMBASE,%a5	| amount to RELOC by.
+	RELOC(lowram,%a0)		| store base of memory.
+	movl    %a5,%a0@
+
+	| Create a new stack at address tmpstk, and push
+	| The existing sp onto it as an arg for next68k_bootargs.
+	ASRELOC(tmpstk, %a0)
+	movel	%sp,%a0@-
+	moveal  %a0,%sp
+	moveal  #0,%a6
+
+	/* Read the header to get our segment list */
+	RELOC(next68k_bootargs,%a0)
+	jbsr	%a0@			| next68k_bootargs(args)
+	addqw	#4,%sp			| clear arg from stack.
+
+	/*
+	 * All data registers are now free.  All address registers
+	 * except %a5 are free.  %a5 is used by the RELOC() macro on hp300
+	 * and cannot be used until after the MMU is enabled.
+	 */
+
+/* determine our CPU/MMU combo - check for all regardless of kernel config */
+	movl	#0x200,%d0		| data freeze bit
+	movc	%d0,%cacr		|   only exists on 68030
+	movc	%cacr,%d0		| read it back
+	tstl	%d0			| zero?
+	jeq	Lnot68030		| yes, we have 68020/68040
+
+	/*
+	 * 68030 models
+	 */
+
+	RELOC(mmutype, %a0)		| no, we have 68030
+	movl	#MMU_68030,%a0@		| set to reflect 68030 PMMU
+	RELOC(cputype, %a0)
+	movl	#CPU_68030,%a0@		| and 68030 CPU
+	RELOC(machineid, %a0)
+	movl	#30,%a0@		| @@@ useless
+	jra	Lstart1
+
+	/*
+	 * End of 68030 section
+	 */
+
+Lnot68030:
+	bset	#31,%d0			| data cache enable bit
+	movc	%d0,%cacr		|   only exists on 68040
+	movc	%cacr,%d0		| read it back
+	tstl	%d0			| zero?
+	beq	Lis68020		| yes, we have 68020
+	moveq	#0,%d0			| now turn it back off
+	movec	%d0,%cacr		|   before we access any data
+
+	/*
+	 * 68040 models
+	 */
+
+	RELOC(mmutype, %a0)
+	movl	#MMU_68040,%a0@		| with a 68040 MMU
+	RELOC(cputype, %a0)
+	movl	#CPU_68040,%a0@		| and a 68040 CPU
+	RELOC(fputype, %a0)
+	movl	#FPU_68040,%a0@		| ...and FPU
+	RELOC(machineid, %a0)
+	movl	#40,%a0@		| @@@ useless
+	jra	Lstart1
+
+	/*
+	 * End of 68040 section
+	 */
+
+	/*
+	 * 68020 models
+	 * (There are no 68020 models of NeXT, but we'll pretend)
+	 */
+
+Lis68020:
+	RELOC(mmutype, %a0)
+	movl	#MMU_68851,%a0@		| no, we have PMMU
+	RELOC(fputype, %a0)		| all of the 68020 systems
+	movl	#FPU_68881,%a0@		|   have a 68881 FPU
+	RELOC(cputype, %a0)
+	movl	#CPU_68020,%a0@		| and a 68020 CPU
+	RELOC(machineid, %a0)
+	movl	#20,%a0@			| @@@ useless
+	jra	Lstart1
+
+	/*
+	 * End of 68020 section
+	 */
+
+Lstart1:
+/* configure kernel and lwp0 VA space so we can get going */
+#if NKSYMS || defined(DDB) || defined(MODULAR)
+	RELOC(esym,%a0)			| end of static kernel test/data/syms
+	movl	%a0@,%a4
+	tstl	%a4
+	jne	Lstart3
+#endif
+	movl	#_C_LABEL(end),%a4	| end of static kernel text/data
+
+Lstart3:
+	addl	%a5,%a4			| convert to PA
+	pea	%a5@			| reloff
+	pea	%a4@			| nextpa
+	RELOC(pmap_bootstrap1,%a0)
+	jbsr	%a0@			| pmap_bootstrap1(nextpa, reloff)
+	addql	#8,%sp
+
+	/*
+	 * Updated nextpa returned in %d0.  We need to squirrel
+	 * that away in a callee-saved register to use later,
+	 * after the MMU is enabled.
+	 */
+	movl	%d0, %d7
+
+	/* NOTE: %d7 is now off-limits!! */
+
+/*
+ * Prepare to enable MMU.
+ * Since the kernel is not mapped logical == physical we must insure
+ * that when the MMU is turned on, all prefetched addresses (including
+ * the PC) are valid.  In order guarantee that, we use the transparent
+ * translation registers (which provide PA == VA mappings) and just
+ * turns on the MMU, then jump from the VA == PA address (at 0x40XXXXXX)
+ * to the actual kernel virtual address (at 0x00XXXXXX) code via a far
+ * jump instruction so that we can defeat the prefetch.
+ *
+ * The TT register values are pre-initialized in the mmu_tt{30,40}[]
+ * arrays (see genassym.cf) and loaded from there before the MMU is
+ * turned on.
+ */
+#include <m68k/m68k/mmu_enable.s>
+
+/*
+ * Should be running mapped from this point on
+ */
+Lmmuenabled:
+/*
+ * Now that the MMU is enabled, we need to clear out the TT value
+ * arrays (so no other code gets confused and thinks we're using them)
+ * and disable the TT registers.
+ */
+	lea	_ASM_LABEL(tmpstk),%sp	| re-load temporary stack
+	moveq	#0,%d0
+#ifdef M68030
+	lea	_C_LABEL(mmu_tt30),%a0	| zap the 2 '030 TT slots
+	movl	%d0,%a0@+
+	movl	%d0,%a0@+
+#endif
+#ifdef M68040
+	lea	_C_LABEL(mmu_tt40),%a0	| zap the 4 '040 TT slots
+	movl	%d0,%a0@+
+	movl	%d0,%a0@+
+	movl	%d0,%a0@+
+	movl	%d0,%a0@+
+	cmpl	#MMU_68040,_C_LABEL(mmutype)
+	jne	1f
+	/* disable '040 TTs */
+	pea	_C_LABEL(mmu_tt40)
+	jbsr	_C_LABEL(mmu_load_tt40)
+	jra	2f
+1:
+#endif
+#ifdef M68030
+	/* disable '030 TTs */
+	pea	_C_LABEL(mmu_tt30)
+	jbsr	_C_LABEL(mmu_load_tt30)
+#endif
+2:
+	lea	_ASM_LABEL(tmpstk),%sp	| re-load temporary stack
+	jbsr	_C_LABEL(vec_init)	| initialize vector table
+
+	/* phase 2 of pmap setup, returns lwp0 SP in %a0 */
+	jbsr	_C_LABEL(pmap_bootstrap2)
+	movl	%a0,%sp			| now running on lwp0's stack
+	movl	#0,%a6			| terminate the stack back trace
+
+	movl	%d7,%sp@-		| push nextpa saved above
+	jbsr	_C_LABEL(machine_init)	| additional pre-main initialization
+	addql	#4,%sp
+	jra	_C_LABEL(main)		| main() (never returns)
+
+/*
+ * Interrupt handlers.
+ *
+ * For auto-vectored interrupts, the CPU provides the
+ * vector 0x18+level.  Note we count spurious interrupts,
+ * but don't do anything else with them.
+ *
+ * intrhand_autovec is the entry point for auto-vectored
+ * interrupts.
+ *
+ * For vectored interrupts, we pull the pc, evec, and exception frame
+ * and pass them to the vectored interrupt dispatcher.  The vectored
+ * interrupt dispatcher will deal with strays.
+ */
+
+ENTRY_NOPROFILE(lev7intr)	/* level 7: parity errors, reset key */
+	addql	#1,_C_LABEL(m68k_intr_evcnt)+NMI_INTRCNT
+	clrl	%sp@-
+	moveml	#0xFFFF,%sp@-		| save registers
+	movl	%usp,%a0		| and save
+	movl	%a0,%sp@(FR_SP)		|   the user stack pointer
+	jbsr	_C_LABEL(nmihand)	| call handler
+	movl	%sp@(FR_SP),%a0		| restore
+	movl	%a0,%usp			|   user SP
+	moveml	%sp@+,#0x7FFF		| and remaining registers
+	addql	#8,%sp			| pop SP and stack adjust
+	jra	_ASM_LABEL(rei)		| all done
+
+/*
+ * Handle the nitty-gritty of rebooting the machine.
+ * Basically we just turn off the MMU and jump to the appropriate ROM routine.
+ * Note that we must be running in an address range that is mapped one-to-one
+ * logical to physical so that the PC is still valid immediately after the MMU
+ * is turned off.  We have conveniently mapped the last page of physical
+ * memory this way.
+ */
+ENTRY_NOPROFILE(machine_reboot)
+	movw	#PSL_HIGHIPL,%sr	| no interrupts
+
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| clear and disable on-chip cache(s)
+
+	| Turn on physical memory mapping.
+	| @@@ This is also 68040 specific and needs fixing.
+	movel	#0x0200c040,%d0		| intio devices are at 0x02000000
+	.long	0x4e7b0004		| movc %d0,%itt0
+	.long	0x4e7b0006		| movc %d0,%dtt0
+	movel	#0x0403c000,%d0		| kernel text and data at 0x04000000
+	.long	0x4e7b0005		| movc %d0,%itt1
+	.long	0x4e7b0007		| movc %d0,%dtt1
+
+	moveal   #NEXT_RAMBASE,%a5	| amount to RELOC by.
+
+	| Create a new stack at address tmpstk, and push
+	| The existing sp onto it for kicks.
+	ASRELOC(tmpstk, %a0)
+	movel	%sp,%a0@-
+	moveal  %a0,%sp
+	moveal  #0,%a6
+
+	ASRELOC(Ldoboot1, %a0)
+	jmp     %a0@			| jump into physical address space.
+Ldoboot1:
+	RELOC(saved_vbr, %a0)
+	movl    %a0@,%d0
+	movc    %d0,%vbr
+
+	| reset the registers as the boot rom likes them:
+	movel	#0x0200c040,%d0		|
+	.long	0x4e7b0004		| movc %d0,%itt0
+	.long	0x4e7b0006		| movc %d0,%dtt0
+	movel	#0x00ffc000,%d0		|
+	.long	0x4e7b0005		| movc %d0,%itt1
+	.long	0x4e7b0007		| movc %d0,%dtt1
+
+	RELOC(monbootflag, %a0)
+	movl	%a0,%d0
+	trap	#13
+1:
+	bra	1b			| This shouldn't be reached.
+
+/*
+ * Misc. global variables.
+ */
+	.data
+GLOBAL(machineid)
+	.long	0xdeadbeef	| default to @@@
+
+GLOBAL(mmuid)
+	.long	0		| default to nothing
+
+GLOBAL(mmutype)
+	.long	0xdeadbeef	| default to 68040 mmu
+
+GLOBAL(cputype)
+	.long	0xdeadbeef	| default to 68020 CPU
+
+GLOBAL(prototc)
+	.long	0		| prototype translation control
+
+GLOBAL(intiobase)
+	.long	0		| KVA of base of internal IO space
+
+GLOBAL(fbbase)
+	.long	0		| KVA of base of framebuffer
+
+GLOBAL(fbmapsize)
+	.long	0		| size of framebuffer (page-rounded)
+
+GLOBAL(fbbasepa)
+	.long	MONOBASE	| PA of base of framebuffer
+
+GLOBAL(monbootflag)
+	.long	0
+
+#ifdef DEBUG
+ASGLOBAL(fulltflush)
+	.long	0
+
+ASGLOBAL(fullcflush)
+	.long	0
+#endif

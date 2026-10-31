@@ -1,0 +1,25 @@
+#	$NetBSD: Makefile,v 1.9 2026/01/07 16:08:22 nia Exp $
+#
+
+# Install CD, to be made after 'build.sh release'
+# Requires populated $RELEASEDIR/${MACHINE}
+
+CDMAKEFSEXTRAOPTS=	-m 700m
+
+.include <bsd.own.mk>
+
+.include "${.CURDIR}/../../../common/Makefile.minibase"
+.include "${.CURDIR}/../Makefile.cdrom"
+
+CDBASE=		amd64cd			# gives ${CDBASE}.iso
+CDRELEASE=	true			# include $RELEASEDIR/$RELEASEMACHINEDIR
+CDRELEASE_NODEBUG=	true
+CDRELEASE_NOCOMPAT=	true
+CDBUILDEXTRA=	boot.cfg		# Add boot.cfg file
+CLEANFILES+=	boot.cfg
+
+prepare_md_post:
+	${TOOL_SED} "s/@@VERSION@@/${DISTRIBVER}/" \
+		< ${.CURDIR}/boot.cfg.in > boot.cfg
+
+.include "${.CURDIR}/../../../common/Makefile.bootcd"

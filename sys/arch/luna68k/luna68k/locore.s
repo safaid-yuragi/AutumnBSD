@@ -1,0 +1,358 @@
+/* $NetBSD: locore.s,v 1.115 2026/04/28 03:29:09 thorpej Exp $ */
+
+/*
+ * Copyright (c) 1988 University of Utah.
+ * Copyright (c) 1980, 1990, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: locore.s 1.66 92/12/22$
+ *
+ *	@(#)locore.s	8.6 (Berkeley) 5/27/94
+ */
+
+#include "opt_compat_netbsd.h"
+#include "opt_compat_sunos.h"
+#include "opt_ddb.h"
+#include "opt_fpsp.h"
+#include "opt_kgdb.h"
+#include "opt_lockdebug.h"
+#include "opt_fpu_emulate.h"
+#include "opt_m68k_arch.h"
+
+#include "assym.h"
+#include <machine/asm.h>
+#include <machine/trap.h>
+#include <machine/board.h>
+
+#include "ksyms.h"
+
+#define	PRINT(msg) \
+	pea	9f		; \
+	jbsr	_C_LABEL(printf); \
+	addl	#4,%sp		; \
+	.data			; \
+     9:	.asciz	msg		; \
+	.text
+#undef	PRINT
+
+/*
+ * Temporary stack for a variety of purposes.
+ * Try and make this the first thing is the data segment so it
+ * is page aligned.  Note that if we overflow here, we run into
+ * our text segment.
+ */
+	.data
+	.space	PAGE_SIZE
+ASGLOBAL(tmpstk)
+
+/*
+ * Macro to relocate a symbol, used before MMU is enabled.
+ */
+#define	IMMEDIATE		#
+#define	_RELOC(var,ar)			\
+	movl	IMMEDIATE var,ar;	\
+	addl	%a5,ar
+
+#define	RELOC(var,ar)		_RELOC(_C_LABEL(var), ar)
+#define	ASRELOC(var,ar)		_RELOC(_ASM_LABEL(var), ar)
+
+BSS(lowram,4)
+BSS(esym,4)
+
+/*
+ * This is for kvm_mkdb, and should be the address of the beginning
+ * of the kernel text segment (not necessarily the same as kernbase).
+ */
+	.text
+GLOBAL(kernel_text)
+
+/*
+ * start of kernel and .text!
+ */
+ASENTRY_NOPROFILE(start)
+	movw	#PSL_HIGHIPL,%sr	| no interrupts
+	movl	#0,%a5			| RAM starts at 0
+	ASRELOC(tmpstk,%a0)
+	movl	%a0,%sp			| give ourselves a temporary stack
+
+	RELOC(edata,%a0)		| clear out BSS
+	movl	#_C_LABEL(end)-4,%d0	| (must be <= 256 kB)
+	subl	#_C_LABEL(edata),%d0
+	lsrl	#2,%d0
+1:	clrl	%a0@+
+	dbra	%d0,1b
+
+	RELOC(boothowto,%a0)
+	movl	%d7,%a0@		| save boothowto
+	RELOC(bootdev,%a0)
+	movl	%d6,%a0@		| save bootdev
+	RELOC(lowram,%a0)
+	movl	%a5,%a0@		| store start of physical memory
+
+	movl	#PROM_ADDR,%a0		| available memory in bytes
+	movl	%a0@(12),%a0		| (int *)base[3])
+	movl	%a0@,%d5
+	RELOC(memavail,%a0)
+	movl	%d5,%a0@		| save memavail
+
+	movl	#PROM_ADDR,%a0		| planemask; 0x0f or 0xff
+	movl	%a0@(184),%a0		| (int *)base[46]
+	movl	%a0@,%d5
+	RELOC(hwplanemask,%a0)
+	movl	%d5,%a0@		| save hwplanemask
+
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| clear and disable on-chip cache(s)
+
+/* determine our CPU/MMU combo - check for all regardless of kernel config */
+	movl	#DC_FREEZE,%d0		| data freeze bit
+	movc	%d0,%cacr		|   only exists on 68030
+	movc	%cacr,%d0		| read it back
+	tstl	%d0			| zero?
+	jeq	Lnot68030		| yes, we have 68040
+	movl	#CPU_68030,%d0
+	movl	#MMU_68030,%d1
+	movl	#FPU_68881,%d2
+	jra	Lstart0
+Lnot68030:
+	movl	#CPU_68040,%d0
+	movl	#MMU_68040,%d1
+	movl	#FPU_68040,%d2
+Lstart0:
+	RELOC(cputype,%a0)
+	movl	%d0,%a0@
+	RELOC(mmutype,%a0)
+	movl	%d1,%a0@
+	RELOC(fputype,%a0)
+	movl	%d2,%a0@
+
+	/*
+	 * save argument of 'x' command on boot per machine type
+	 * XXX: assume CPU_68040 is LUNA-II
+	 */
+	movl	#PROM_ADDR,%a0
+	cmpl	#CPU_68040,%d0		| 68040?
+	jne	1f			| no, assume 68030 LUNA
+	movl	%a0@(8),%a0		| arg at (char *)base[2] on LUNA-II
+	jra	Lstart1
+1:
+	movl	%a0@(212),%a0		| arg at (char *)base[53] on LUNA
+Lstart1:
+	RELOC(bootarg,%a1)
+	movl	#63,%d0
+1:	movb	%a0@+,%a1@+		| copy to bootarg
+	dbra	%d0,1b			| upto 63 characters
+
+/* initialize memory sizes (for pmap_bootstrap1) */
+	RELOC(memavail,%a0)
+	movl	%a0@,%d1
+	moveq	#PGSHIFT,%d2
+	lsrl	%d2,%d1			| convert to page (click) number
+	RELOC(maxmem,%a0)
+	movl	%d1,%a0@		| save as maxmem
+	RELOC(physmem,%a0)
+	movl	%d1,%a0@		| and physmem
+
+/* check if symbol table is loaded and set esym address */
+#if NKSYMS || defined(DDB) || defined(MODULAR)
+	RELOC(end,%a0)
+	pea	%a0@
+	RELOC(_C_LABEL(symtab_size),%a0)
+	jbsr	%a0@			| symtab_size(end)
+	addql	#4,%sp
+	tstl	%d0			| check if valid symtab is loaded
+	jeq	1f			|  no, skip
+	lea	_C_LABEL(end),%a0	| calculate end of symtab address
+	addl	%a0,%d0
+#else
+	clrl	%d0			| no symbol table
+#endif
+1:
+	RELOC(esym,%a0)
+	movl	%d0,%a0@
+
+/* configure kernel and lwp0 VA space so we can get going */
+#if NKSYMS || defined(DDB) || defined(MODULAR)
+	RELOC(esym,%a0)			| end of static kernel test/data/syms
+	movl	%a0@,%a4
+	tstl	%a4
+	jne	Lstart3
+#endif
+	movl	#_C_LABEL(end),%a4	| end of static kernel text/data
+Lstart3:
+	addl	%a5,%a4			| convert to PA
+	pea	%a5@			| reloff
+	pea	%a4@			| nextpa
+	RELOC(pmap_bootstrap1,%a0)
+	jbsr	%a0@			| pmap_bootstrap1(nextpa, reloff)
+	addql	#8,%sp
+
+	/*
+	 * Updated nextpa returned in %d0.  We need to squirrel
+	 * that away in a callee-saved register to use later,
+	 * after the MMU is enabled.
+	 */
+	movl	%d0, %d7
+
+	/* NOTE: %d7 is now off-limits!! */
+
+/*
+ * Enable the MMU.
+ * Since the kernel is mapped logical == physical, there is no prep
+ * work to do.
+ */
+#include <m68k/m68k/mmu_enable.s>
+
+/*
+ * Should be running mapped from this point on
+ */
+Lmmuenabled:
+	lea	_ASM_LABEL(tmpstk),%sp	| re-load temporary stack
+	jbsr	_C_LABEL(vec_init)	| initialize vector table
+
+	/* phase 2 of pmap setup, returns lwp0 SP in %a0 */
+	jbsr	_C_LABEL(pmap_bootstrap2)
+	movl	%a0,%sp			| now running on lwp0's stack
+	movl	#0,%a6			| terminate the stack back trace
+
+	movl	%d7,%sp@-		| push nextpa saved above
+	jbsr	_C_LABEL(machine_init)	| additional pre-main initialization
+	addql	#4,%sp
+	jra	_C_LABEL(main)		| main() (never returns)
+
+/*
+ * Interrupt handlers.
+ */
+
+ENTRY_NOPROFILE(lev7intr)		/* Level 7: NMI */
+	addql	#1,_C_LABEL(m68k_intr_evcnt)+NMI_INTRCNT
+	clrl	%sp@-
+	moveml	#0xFFFF,%sp@-		| save registers
+	movl	%usp,%a0		| and save
+	movl	%a0,%sp@(FR_SP)		|   the user stack pointer
+	jbsr	_C_LABEL(nmihand)	| call handler
+	movl	%sp@(FR_SP),%a0		| restore
+	movl	%a0,%usp		|   user SP
+	moveml	%sp@+,#0x7FFF		| and remaining registers
+	addql	#8,%sp			| pop SP and stack adjust
+	jra	_ASM_LABEL(rei)		| all done
+
+#if 1	/* XXX wild timer -- how can I disable/enable the interrupt? */
+ENTRY_NOPROFILE(lev5intr)
+	addql	#1,_C_LABEL(intr_depth)
+	btst	#7,OBIO_CLOCK		| check whether system clock
+	beq	2f
+	movb	#1,OBIO_CLOCK		| clear the interrupt
+	tstl	_C_LABEL(clock_enable)	| is hardclock() available?
+	jeq	1f
+	INTERRUPT_SAVEREG
+	lea	%sp@(0),%a1		| %a1 = &clockframe
+	movl	%a1,%sp@-
+	jbsr	_C_LABEL(hardclock)	| hardclock(&frame)
+	addql	#4,%sp
+	addql	#1,_C_LABEL(m68k_intr_evcnt)+CLOCK_INTRCNT
+	INTERRUPT_RESTOREREG
+1:
+	subql	#1,_C_LABEL(intr_depth)
+	jra	_ASM_LABEL(rei)		| all done
+2:
+					| XP device has also lev5 intr,
+					| routing to autovec
+	subql	#1,_C_LABEL(intr_depth)
+	jbra	_C_LABEL(intrstub_autovec)
+#endif
+
+/*
+ * Handle the nitty-gritty of rebooting the machine.
+ * Basically we just turn off the MMU, restore the initial %vbr
+ * and return to monitor.
+ */
+ENTRY_NOPROFILE(machine_reboot)
+	movw	#PSL_HIGHIPL,%sr	| no interrupts
+	movl	_C_LABEL(boothowto),%d7	| load howto
+#if defined(M68040)
+	cmpl	#MMU_68040,_C_LABEL(mmutype) | 68040?
+	jeq	Lnocache5		| yes, skip
+#endif
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| disable on-chip cache(s)
+	movl	#0,%a7@			| value for pmove to %tc
+	pmove	%a7@,%tc		| disable MMU
+	lea	_ASM_LABEL(nullrp),%a0
+	pmove	%a0@,%crp		| Invalidate CPU root pointer
+	pmove	%a0@,%srp		| and the Supervisor root pointer
+	jra	Lbootcommon
+#if defined(M68040)
+Lnocache5:
+	.word	0xf4f8			| cpusha bc
+	movql	#0,%d0
+	movc	%d0,%cacr
+	.long	0x4e7b0003		| movc %d0,%tc (disable MMU)
+	.long	0x4e7b0806		| movc %d0,%urp
+	.long	0x4e7b0807		| movc %d0,%srp
+#endif /* M68040 */
+Lbootcommon:
+	lea	_ASM_LABEL(tmpstk),%sp	| physical SP in case of NMI
+	movl	#0,%d3
+	movc	%d3,%vbr		| monitor %vbr
+
+	movl	#PROM_ADDR,%a0		| base = (int **)0x4100.0000
+	movl	%a0@,%d0		| *((int *)base[0])
+	movc	%d0,%isp		| set initial stack pointer
+	movc	%d0,%msp		| set initial stack pointer
+	movl	%a0@(4),%a0		| *((int (*)(void))base[1])
+	jmp	%a0@			| go cold boot!
+
+	.data
+GLOBAL(cputype)
+	.long	CPU_68030	| default to 68030
+GLOBAL(mmutype)
+	.long	MMU_68030	| default to 68030
+
+nullrp:
+	.long	0x7fff0001	| do-nothing MMU root pointer
+
+GLOBAL(memavail)
+	.long	0
+GLOBAL(bootdev)
+	.long	0
+GLOBAL(hwplanemask)
+	.long	0
+GLOBAL(bootarg)
+	.long	0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0
+
+#ifdef DEBUG
+ASGLOBAL(fulltflush)
+	.long	0
+
+ASGLOBAL(fullcflush)
+	.long	0
+#endif

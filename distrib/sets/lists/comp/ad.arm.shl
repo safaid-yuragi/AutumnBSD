@@ -1,0 +1,7 @@
+# $NetBSD: ad.arm.shl,v 1.10 2024/07/11 20:41:06 riastradh Exp $
+#
+./usr/lib/libarm32_pic.a			comp-obsolete		obsolete
+./usr/lib/libarm_pic.a				comp-c-piclib		picinstall,compatfile
+./usr/lib/libc_vfp_pic.a			comp-c-piclib		softfloat,picinstall
+./usr/lib/libpmc_pic.a				comp-obsolete		obsolete
+./usr/lib/oabi/libc_vfp_pic.a			comp-obsolete		obsolete

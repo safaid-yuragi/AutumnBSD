@@ -1,0 +1,16 @@
+#	$NetBSD: std.hp300,v 1.14 2026/08/16 00:14:59 thorpej Exp $
+#
+# Options/devices that all hp300s should have
+#
+
+machine hp300 m68k
+include		"conf/std"			# MI standard options
+include		"arch/m68k/conf/std.m68k"	# m68k standard options
+
+options 	EXEC_AOUT	# support for exec'ing a.out
+
+# New pmap module; pending testing on HP MMU
+#options 	__HAVE_NEW_PMAP_68K
+
+# XXX This is needed by asm code in libkern.
+makeoptions	CPPFLAGS+="-D__HAVE_M68K_BROKEN_RMC=1"

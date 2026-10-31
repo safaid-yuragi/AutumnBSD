@@ -1,0 +1,135 @@
+/*	$NetBSD: cpu.h,v 1.61 2026/04/26 12:49:38 thorpej Exp $	*/
+
+/*
+ * Copyright (c) 1988 University of Utah.
+ * Copyright (c) 1982, 1990, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: cpu.h 1.16 91/03/25$
+ *
+ *	@(#)cpu.h	8.4 (Berkeley) 1/5/94
+ */
+
+#ifndef _NEWS68K_CPU_H_
+#define _NEWS68K_CPU_H_
+
+#if defined(_KERNEL_OPT)
+#include "opt_lockdebug.h"
+#include "opt_newsconf.h"
+#include "opt_m68k_arch.h"
+#endif
+
+/*
+ * Get common m68k CPU definitions.
+ */
+#include <m68k/cpu.h>
+
+#if defined(_KERNEL)
+/*
+ * Exported definitions unique to news68k cpu support.
+ */
+
+#define	cpu_set_hw_ast(l)						\
+	do {								\
+		extern volatile u_char *ctrl_ast;			\
+		__USE(l);						\
+		*ctrl_ast = 0xff;					\
+	} while (/*CONSTCOND*/0)
+
+#if defined(news1700)
+#define CACHE_HAVE_PAC
+#ifndef M68K_EC_PAC
+#error M68K_EC_PAC should be defined
+#endif
+#ifndef M68K_EC
+#error M68K_EC should be defined
+#endif
+#endif
+
+extern int systype;
+#define NEWS1700	0
+#define NEWS1200	1
+
+extern uint8_t *intiobase, *intiotop;
+
+extern void *romcallvec;
+
+struct frame;
+
+void doboot(int)
+	__attribute__((__noreturn__));
+void nmihand(struct frame *);
+void ecacheon(void);
+void ecacheoff(void);
+
+#endif
+
+/* physical memory sections */
+#define ROMBASE		0xe0000000
+
+#define INTIOBASE1700	0xe0c00000
+#define INTIOTOP1700	0xe1d00000 /* XXX */
+#define EXTIOBASE1700	0xf0f00000
+#define CTRL_POWER1700	0xe1380000
+#define CTRL_LED1700	0xe0dc0000
+
+#define INTIOBASE1200	0xe1000000
+#define INTIOTOP1200	0xe1d00000 /* XXX */
+#define EXTIOBASE1200	0xe4000000
+#define CTRL_POWER1200	0xe1000000
+#define CTRL_LED1200	0xe1500001
+
+#define MAXADDR		0xfffff000
+
+/*
+ * Internal IO space:
+ *
+ * Internal IO space is mapped in the kernel by TT0 register (in locore.s)
+ * and PA range is from ``intiobase'' to ``intiotop''.
+ */
+#define ISIIOPA(pa) \
+	((uint8_t *)(pa) >= intiobase && (uint8_t *)(pa) < intiotop)
+
+#if defined(M68K_EC)
+#define M68K_CACHEOPS_MACHDEP
+#endif
+
+#ifdef M68K_EC_PAC
+#define M68K_CACHEOPS_MACHDEP_PCIA
+#endif
+
+#ifdef M68K_EC_VAC
+#define M68K_CACHEOPS_MACHDEP_DCIA
+#define M68K_CACHEOPS_MACHDEP_DCIS
+#define M68K_CACHEOPS_MACHDEP_DCIU
+#endif
+
+#endif /* !_NEWS68K_CPU_H_ */

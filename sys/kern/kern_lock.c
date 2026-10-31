@@ -1,0 +1,477 @@
+/*	$NetBSD: kern_lock.c,v 1.198 2026/08/16 21:52:42 riastradh Exp $	*/
+
+/*-
+ * Copyright (c) 2002, 2006, 2007, 2008, 2009, 2020, 2023
+ *     The NetBSD Foundation, Inc.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to The NetBSD Foundation
+ * by Jason R. Thorpe of the Numerical Aerospace Simulation Facility,
+ * NASA Ames Research Center, and by Andrew Doran.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <sys/cdefs.h>
+__KERNEL_RCSID(0, "$NetBSD: kern_lock.c,v 1.198 2026/08/16 21:52:42 riastradh Exp $");
+
+#ifdef _KERNEL_OPT
+#include "opt_lockdebug.h"
+#include "opt_multiprocessor.h"
+#endif
+
+#include <sys/param.h>
+#include <sys/types.h>
+
+#include <sys/atomic.h>
+#include <sys/cpu.h>
+#include <sys/kernel.h>
+#include <sys/lock.h>
+#include <sys/lockdebug.h>
+#include <sys/lwp.h>
+#include <sys/proc.h>
+#include <sys/pserialize.h>
+#include <sys/sdt.h>
+#include <sys/syslog.h>
+#include <sys/systm.h>
+
+#if defined(DIAGNOSTIC) && !defined(LOCKDEBUG)
+#include <sys/ksyms.h>
+#endif
+
+#include <machine/lock.h>
+
+#include <dev/lockstat.h>
+
+SDT_PROBE_DEFINE1(sdt, kernel, lock, entry,
+    "unsigned"/*nlocks*/);
+SDT_PROBE_DEFINE1(sdt, kernel, lock, exit,
+    "unsigned"/*nlocks*/);
+
+#define	RETURN_ADDRESS	(uintptr_t)__builtin_return_address(0)
+
+bool	kernel_lock_dodebug;
+
+struct kernel_lock {
+	__cpu_simple_lock_t	lock __aligned(CACHE_LINE_SIZE);
+	struct cpu_info		*volatile holder;
+} kernel_lock_cacheline[CACHE_LINE_SIZE / sizeof(struct kernel_lock)]
+    __cacheline_aligned;
+__strong_alias(kernel_lock, kernel_lock_cacheline)
+#define	kernel_lock_holder	(kernel_lock_cacheline[0].holder)
+
+void
+assert_sleepable(void)
+{
+	const char *reason;
+	long pctr;
+	bool idle;
+
+	if (__predict_false(panicstr != NULL)) {
+		return;
+	}
+
+	LOCKDEBUG_BARRIER(kernel_lock, 1);
+
+	/*
+	 * Avoid disabling/re-enabling preemption here since this
+	 * routine may be called in delicate situations.
+	 */
+	do {
+		pctr = lwp_pctr();
+		idle = CURCPU_IDLE_P();
+	} while (__predict_false(pctr != lwp_pctr()));
+
+	reason = NULL;
+	if (__predict_false(idle) && !cold) {
+		reason = "idle";
+		goto panic;
+	}
+	if (__predict_false(cpu_intr_p())) {
+		reason = "interrupt";
+		goto panic;
+	}
+	if (__predict_false(cpu_softintr_p())) {
+		reason = "softint";
+		goto panic;
+	}
+	if (__predict_false(!pserialize_not_in_read_section())) {
+		reason = "pserialize";
+		goto panic;
+	}
+	return;
+
+panic:	panic("%s: %s caller=%p", __func__, reason, (void *)RETURN_ADDRESS);
+}
+
+/*
+ * Functions for manipulating the kernel_lock.  We put them here
+ * so that they show up in profiles.
+ */
+
+#define	_KERNEL_LOCK_ABORT(msg)						\
+    LOCKDEBUG_ABORT(__func__, __LINE__, kernel_lock, &_kernel_lock_ops, msg)
+
+#ifdef LOCKDEBUG
+#define	_KERNEL_LOCK_ASSERT(cond)					\
+do {									\
+	if (!(cond))							\
+		_KERNEL_LOCK_ABORT("assertion failed: " #cond);		\
+} while (/* CONSTCOND */ 0)
+#else
+#define	_KERNEL_LOCK_ASSERT(cond)	/* nothing */
+#endif
+
+static void	_kernel_lock_dump(const volatile void *, lockop_printer_t);
+
+lockops_t _kernel_lock_ops = {
+	.lo_name = "Kernel lock",
+	.lo_type = LOCKOPS_SPIN,
+	.lo_dump = _kernel_lock_dump,
+};
+
+#ifdef DDB
+#include <ddb/ddb.h>
+#endif
+
+#ifdef MULTIPROCESSOR
+static void
+kernel_lock_trace_ipi(void *cookie)
+{
+
+	printf("%s[%d %s]: hogging kernel lock\n", cpu_name(curcpu()),
+	    curlwp->l_lid,
+	    curlwp->l_name ? curlwp->l_name : curproc->p_comm);
+#ifdef DDB
+	db_stacktrace();
+
+	/*
+	 * Make sure we leave a return address around for db_stacktrace
+	 * to find.
+	 */
+	__insn_barrier();
+	return;
+#endif
+}
+
+static void
+kernel_lock_spinout(void)
+{
+	static volatile unsigned kernel_lock_last_report;
+	ipi_msg_t msg = {
+		.func = kernel_lock_trace_ipi,
+	};
+	unsigned now, then;
+	struct cpu_info *holder;
+
+	/*
+	 * Disable preemption so that curcpu() is stable in this function.
+	 * Otherwise, it's possible for the curlwp to be migrated to the
+	 * holder cpu in the meantime.
+	 */
+	kpreempt_disable();
+
+	/*
+	 * Find who holds the kernel lock.  If nobody, we can't report
+	 * anything, so pass -- but while this is possible in principle
+	 * because we first take the lock and then set the holder, it
+	 * is rather unlikely to actually happen in practice because we
+	 * wait 10sec to take the lock before trying to report a
+	 * problem anyway.
+	 */
+	if (!__SIMPLELOCK_LOCKED_P(kernel_lock))
+		goto out;
+
+	/*
+	 * Note: holder == NULL here basically means
+	 * "no one has acquired kernel lock since the boot".
+	 *
+	 * Theoretically it's possible the first locker has acquired
+	 * kernel_lock but has not updated kernel_lock_holder yet.
+	 * But it's only theoretical, I suppose.
+	 */
+	holder = atomic_load_relaxed(&kernel_lock_holder);
+	if (holder == NULL)
+		goto out;
+
+	/*
+	 * We know we don't have the kernel lock.
+	 *
+	 * However, the holder value is not reliable because we don't
+	 * hold kernel lock. For example, an interrupt on this cpu may
+	 * acquire/release the kernel lock and leave kernel_lock_holder
+	 * pointing to us.
+	 */
+	if (holder == curcpu())
+		goto out;
+
+	/*
+	 * If we already reported kernel lock hogging in the last ten
+	 * seconds, probably not worthwhile to fill the log buffer with
+	 * repeated reports, so pass.
+	 *
+	 * XXX This can roll over, but only after decades of uptime.
+	 */
+	then = atomic_load_relaxed(&kernel_lock_last_report);
+	now = time_uptime;
+	if (now - then <= 10)
+		goto out;
+	if (atomic_cas_uint(&kernel_lock_last_report, then, now) != then)
+		goto out;
+
+	printf("%s[%d %s]: kernel lock spinout\n", cpu_name(curcpu()),
+	    curlwp->l_lid,
+	    curlwp->l_name ? curlwp->l_name : curproc->p_comm);
+	/*
+	 * Send an IPI to whatever CPU holds the kernel lock.
+	 */
+	ipi_unicast(&msg, holder);
+	ipi_wait(&msg);
+out:
+	kpreempt_enable();
+
+#ifdef LOCKDEBUG
+	_KERNEL_LOCK_ABORT("spinout");
+#endif
+	return;
+}
+#endif /* MULTIPROCESSOR */
+
+/*
+ * Initialize the kernel lock.
+ */
+void
+kernel_lock_init(void)
+{
+
+	__cpu_simple_lock_init(kernel_lock);
+	kernel_lock_dodebug = LOCKDEBUG_ALLOC(kernel_lock, &_kernel_lock_ops,
+	    RETURN_ADDRESS);
+}
+CTASSERT(CACHE_LINE_SIZE >= sizeof(__cpu_simple_lock_t));
+
+/*
+ * Print debugging information about the kernel lock.
+ */
+static void
+_kernel_lock_dump(const volatile void *junk, lockop_printer_t pr)
+{
+	struct cpu_info *ci = curcpu();
+
+	(void)junk;
+
+	pr("curcpu holds : %18d wanted by: %#018lx\n",
+	    ci->ci_biglock_count, (long)ci->ci_biglock_wanted);
+}
+
+/*
+ * Acquire 'nlocks' holds on the kernel lock.
+ *
+ * Although it may not look it, this is one of the most central, intricate
+ * routines in the kernel, and tons of code elsewhere depends on its exact
+ * behaviour.  If you change something in here, expect it to bite you in the
+ * rear.
+ */
+void
+_kernel_lock(int nlocks)
+{
+	struct cpu_info *ci;
+#ifdef MULTIPROCESSOR
+	LOCKSTAT_TIMER(spintime);
+	LOCKSTAT_FLAG(lsflag);
+#endif
+	int s;
+	struct lwp *l = curlwp;
+	volatile void *owanted;
+
+	_KERNEL_LOCK_ASSERT(nlocks > 0);
+
+	s = splvm();
+	ci = curcpu();
+	if (ci->ci_biglock_count != 0) {
+		_KERNEL_LOCK_ASSERT(__SIMPLELOCK_LOCKED_P(kernel_lock));
+		SDT_PROBE1(sdt, kernel, lock, entry,  nlocks);
+		ci->ci_biglock_count += nlocks;
+		l->l_blcnt += nlocks;
+		splx(s);
+		return;
+	}
+
+	_KERNEL_LOCK_ASSERT(l->l_blcnt == 0);
+	LOCKDEBUG_WANTLOCK(kernel_lock_dodebug, kernel_lock, RETURN_ADDRESS,
+	    0, &owanted);
+
+	if (__predict_true(__cpu_simple_lock_try(kernel_lock))) {
+		atomic_store_relaxed(&kernel_lock_holder, curcpu());
+		SDT_PROBE1(sdt, kernel, lock, entry,  nlocks);
+		ci->ci_biglock_count = nlocks;
+		l->l_blcnt = nlocks;
+		LOCKDEBUG_LOCKED(kernel_lock_dodebug, kernel_lock, NULL,
+		    RETURN_ADDRESS, 0, &owanted);
+		splx(s);
+		return;
+	}
+
+#ifndef MULTIPROCESSOR
+	panic("%s: contended ???", __func__);
+#else
+	struct lwp *owant;
+	u_int starttime;
+
+	/*
+	 * To remove the ordering constraint between adaptive mutexes
+	 * and kernel_lock we must make it appear as if this thread is
+	 * blocking.  For non-interlocked mutex release, a store fence
+	 * is required to ensure that the result of any mutex_exit()
+	 * by the current LWP becomes visible on the bus before the set
+	 * of ci->ci_biglock_wanted becomes visible.
+	 *
+	 * This membar_producer matches the membar_consumer in
+	 * mutex_vector_enter.
+	 *
+	 * That way, if l has just released a mutex, mutex_vector_enter
+	 * can't see this store ci->ci_biglock_wanted := l until it
+	 * will also see the mutex_exit store mtx->mtx_owner := 0 which
+	 * clears the has-waiters bit.
+	 */
+	membar_producer();
+	owant = ci->ci_biglock_wanted;
+	atomic_store_relaxed(&ci->ci_biglock_wanted, l);
+
+	/*
+	 * Spin until we acquire the lock.  Once we have it, record the
+	 * time spent with lockstat.
+	 */
+	LOCKSTAT_ENTER(lsflag);
+	LOCKSTAT_START_TIMER(lsflag, spintime);
+
+	starttime = getticks();
+	do {
+		splx(s);
+		while (__SIMPLELOCK_LOCKED_P(kernel_lock)) {
+			if (start_init_exec &&
+			    (getticks() - starttime) > 10*hz) {
+				kernel_lock_spinout();
+			}
+			SPINLOCK_BACKOFF_HOOK;
+			SPINLOCK_SPIN_HOOK;
+		}
+		s = splvm();
+	} while (!__cpu_simple_lock_try(kernel_lock));
+
+	atomic_store_relaxed(&kernel_lock_holder, curcpu());
+
+	SDT_PROBE1(sdt, kernel, lock, entry,  nlocks);
+	ci->ci_biglock_count = nlocks;
+	l->l_blcnt = nlocks;
+	LOCKSTAT_STOP_TIMER(lsflag, spintime);
+	LOCKDEBUG_LOCKED(kernel_lock_dodebug, kernel_lock, NULL,
+	    RETURN_ADDRESS, 0, &owanted);
+	if (owant == NULL) {
+		LOCKSTAT_EVENT_RA(lsflag, kernel_lock,
+		    LB_KERNEL_LOCK | LB_SPIN, 1, spintime, RETURN_ADDRESS);
+	}
+	LOCKSTAT_EXIT(lsflag);
+	splx(s);
+
+	/*
+	 * Now that we have kernel_lock, reset ci_biglock_wanted.  This
+	 * store must be visible on other CPUs before a mutex_exit() on
+	 * this CPU can test the has-waiters bit.
+	 *
+	 * This membar_enter matches the membar_enter in
+	 * mutex_vector_enter.  (Yes, not membar_exit -- the legacy
+	 * naming is confusing, but store-before-load usually pairs
+	 * with store-before-load, in the extremely rare cases where it
+	 * is used at all.)
+	 *
+	 * That way, mutex_vector_enter can't see this store
+	 * ci->ci_biglock_wanted := owant until it has set the
+	 * has-waiters bit.
+	 */
+	(void)atomic_swap_ptr(&ci->ci_biglock_wanted, owant);
+#ifndef __HAVE_ATOMIC_AS_MEMBAR
+	membar_enter();
+#endif
+#endif /* MULTIPROCESSOR */
+}
+
+/*
+ * Release 'nlocks' holds on the kernel lock.  If 'nlocks' is zero, release
+ * all holds.
+ */
+void
+_kernel_unlock(int nlocks, int *countp)
+{
+	struct cpu_info *ci;
+	u_int olocks;
+	int s;
+	struct lwp *l = curlwp;
+
+	_KERNEL_LOCK_ASSERT(nlocks < 2);
+
+	olocks = l->l_blcnt;
+
+	if (olocks == 0) {
+		_KERNEL_LOCK_ASSERT(nlocks <= 0);
+		if (countp != NULL)
+			*countp = 0;
+		return;
+	}
+
+	_KERNEL_LOCK_ASSERT(__SIMPLELOCK_LOCKED_P(kernel_lock));
+
+	if (nlocks == 0)
+		nlocks = olocks;
+	else if (nlocks == -1) {
+		nlocks = 1;
+		_KERNEL_LOCK_ASSERT(olocks == 1);
+	}
+	s = splvm();
+	ci = curcpu();
+	_KERNEL_LOCK_ASSERT(ci->ci_biglock_count >= l->l_blcnt);
+	if (ci->ci_biglock_count == nlocks) {
+		LOCKDEBUG_UNLOCKED(kernel_lock_dodebug, kernel_lock,
+		    RETURN_ADDRESS, 0);
+		ci->ci_biglock_count = 0;
+		__cpu_simple_unlock(kernel_lock);
+		l->l_blcnt -= nlocks;
+		splx(s);
+		if (l->l_dopreempt)
+			kpreempt(0);
+	} else {
+		ci->ci_biglock_count -= nlocks;
+		l->l_blcnt -= nlocks;
+		splx(s);
+	}
+
+	SDT_PROBE1(sdt, kernel, lock, exit,  nlocks);
+
+	if (countp != NULL)
+		*countp = olocks;
+}
+
+bool
+_kernel_locked_p(void)
+{
+	return __SIMPLELOCK_LOCKED_P(kernel_lock);
+}

@@ -1,0 +1,8 @@
+# $NetBSD: ad.m68k,v 1.4 2024/07/11 20:41:09 riastradh Exp $
+#
+./@MODULEDIR@/compat_aoutm68k			modules-base-kernel	kmod
+./@MODULEDIR@/compat_aoutm68k/compat_aoutm68k.kmod modules-base-kernel	kmod
+./@MODULEDIR@/exec_aout				modules-base-kernel	kmod
+./@MODULEDIR@/exec_aout/exec_aout.kmod		modules-base-kernel	kmod
+./@MODULEDIR@/exec_elf32			modules-base-kernel	kmod
+./@MODULEDIR@/exec_elf32/exec_elf32.kmod	modules-base-kernel	kmod

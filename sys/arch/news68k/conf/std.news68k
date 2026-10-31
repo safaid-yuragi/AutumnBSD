@@ -1,0 +1,9 @@
+#	$NetBSD: std.news68k,v 1.10 2026/08/16 00:15:00 thorpej Exp $
+
+machine news68k m68k
+include		"conf/std"			# MI standard options
+include		"arch/m68k/conf/std.m68k"	# m68k standard options
+
+options 	EXEC_AOUT	# exec a.out binaries
+
+options 	__HAVE_NEW_PMAP_68K

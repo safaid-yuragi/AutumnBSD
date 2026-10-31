@@ -1,0 +1,79 @@
+.\"	$NetBSD: fgen.1,v 1.12 2025/12/21 22:21:25 uwe Exp $
+.\"
+.\" Copyright (c) 1998 Eduardo Horvath, All Rights Reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+.\" IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+.\" OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+.\" IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+.\" INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+.\" NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+.\" DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+.\" THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+.\" (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+.\" THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+.\"
+.\" The following requests are required for all man pages.
+.Dd October 31, 1998
+.Dt FGEN 1
+.Os
+.
+.Sh NAME
+.Nm fgen
+.Nd IEEE 1275 Open Firmware FCode Tokenizer
+.
+.Sh SYNOPSIS
+.Nm
+.Op Fl d Ar level
+.Op Fl o Ar outfile
+.Ar infile
+.
+.Sh DESCRIPTION
+Reads Forth source and generates tokenized FCode object file.
+.
+.Sh SEE ALSO
+.Rs
+.%B Writing FCode 3.x Programs
+.%Q Sun Microsystems, Inc.\&
+.%D 1996
+.\"%U https://docs.oracle.com/cd/E19957-01/802-6287/802-6287.pdf
+.\"%U https://docs.oracle.com/cd/E19957-01/802-3239-10/TOC.html
+.Re
+.
+.
+.Sh STANDARDS
+.Rs
+.%B Tn IEEE Standard 1275-1994 for Boot (Initialization Configuration) Firmware: \
+    Core Requirements and Practices
+.%U doi:10.1109/IEEESTD.1994.89427
+.Re
+.
+.Sh AUTHORS
+Written by
+.An Eduardo E. Horvath Aq Mt eeh@one-o.com
+.
+.Sh BUGS
+String escape sequences are not recognized so things such as
+.Pp
+.Dl \*q foo \*q(01 02) \*qn \*q
+.Pp
+will result in the string
+.Pp
+.D1 Dq Li foo \*q(01 02) \*qn
+.Pp
+Hexadecimal numbers with dots in them such as
+.Ql 100.0000
+are not parsed.
+.Pp
+Permissions on the output file are often incorrect.
+.Pp
+Output to the standard output device can cause problems.

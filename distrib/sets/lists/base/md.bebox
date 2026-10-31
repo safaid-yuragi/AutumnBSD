@@ -1,0 +1,12 @@
+# $NetBSD: md.bebox,v 1.25 2024/07/11 20:41:05 riastradh Exp $
+#
+./dev/pms0					base-obsolete		obsolete
+./usr/mdec/boot					base-sysutil-root
+./usr/mdec/boot_com0				base-sysutil-root
+./usr/mdec/boot_vga				base-sysutil-root
+./usr/mdec/elf2pef				base-obsolete		obsolete
+./usr/mdec/mkbootimage				base-sysutil-root
+./usr/share/sysinst/catalog/sysinstmsgs.de	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.es	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.fr	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.pl	base-util-share

@@ -1,0 +1,960 @@
+/*	$NetBSD: lfs_subr.c,v 1.116 2026/10/30 03:40:41 perseant Exp $	*/
+
+/*-
+ * Copyright (c) 1999, 2000, 2001, 2002, 2003 The NetBSD Foundation, Inc.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to The NetBSD Foundation
+ * by Konrad E. Schroder <perseant@hhhh.org>.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+/*
+ * Copyright (c) 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)lfs_subr.c	8.4 (Berkeley) 5/8/95
+ */
+
+#include <sys/cdefs.h>
+__KERNEL_RCSID(0, "$NetBSD: lfs_subr.c,v 1.116 2026/10/30 03:40:41 perseant Exp $");
+
+#include <sys/param.h>
+#include <sys/systm.h>
+#include <sys/namei.h>
+#include <sys/vnode.h>
+#include <sys/buf.h>
+#include <sys/mount.h>
+#include <sys/malloc.h>
+#include <sys/proc.h>
+#include <sys/kauth.h>
+
+#include <ufs/lfs/ulfs_inode.h>
+#include <ufs/lfs/lfs.h>
+#include <ufs/lfs/lfs_accessors.h>
+#include <ufs/lfs/lfs_kernel.h>
+#include <ufs/lfs/lfs_extern.h>
+
+#ifdef DEBUG
+const char *lfs_res_names[LFS_NB_COUNT] = {
+	"summary",
+	"superblock",
+	"file block",
+	"cluster",
+	"clean",
+	"blkiov",
+};
+#endif
+
+int lfs_res_qty[LFS_NB_COUNT] = {
+	LFS_N_SUMMARIES,
+	LFS_N_SBLOCKS,
+	LFS_N_IBLOCKS,
+	LFS_N_CLUSTERS,
+	LFS_N_CLEAN,
+	LFS_N_BLKIOV,
+};
+
+void
+lfs_setup_resblks(struct lfs *fs)
+{
+	int i, j;
+	int maxbpp;
+
+	ASSERT_NO_SEGLOCK(fs);
+	fs->lfs_resblk = malloc(LFS_N_TOTAL * sizeof(res_t), M_SEGMENT,
+				M_WAITOK);
+	for (i = 0; i < LFS_N_TOTAL; i++) {
+		fs->lfs_resblk[i].inuse = 0;
+		fs->lfs_resblk[i].p = NULL;
+	}
+	for (i = 0; i < LFS_RESHASH_WIDTH; i++)
+		LIST_INIT(fs->lfs_reshash + i);
+
+	/*
+	 * These types of allocations can be larger than a page,
+	 * so we can't use the pool subsystem for them.
+	 */
+	for (i = 0, j = 0; j < LFS_N_SUMMARIES; j++, i++)
+		fs->lfs_resblk[i].size = lfs_sb_getsumsize(fs);
+	for (j = 0; j < LFS_N_SBLOCKS; j++, i++)
+		fs->lfs_resblk[i].size = LFS_SBPAD;
+	for (j = 0; j < LFS_N_IBLOCKS; j++, i++)
+		fs->lfs_resblk[i].size = lfs_sb_getbsize(fs);
+	for (j = 0; j < LFS_N_CLUSTERS; j++, i++)
+		fs->lfs_resblk[i].size = MAXPHYS;
+	for (j = 0; j < LFS_N_CLEAN; j++, i++)
+		fs->lfs_resblk[i].size = MAXPHYS;
+	for (j = 0; j < LFS_N_BLKIOV; j++, i++)
+		fs->lfs_resblk[i].size = LFS_MARKV_MAXBLKCNT * sizeof(BLOCK_INFO);
+
+	for (i = 0; i < LFS_N_TOTAL; i++) {
+		fs->lfs_resblk[i].p = malloc(fs->lfs_resblk[i].size,
+					     M_SEGMENT, M_WAITOK);
+	}
+
+	/*
+	 * Initialize pools for small types (XXX is BPP small?)
+	 */
+	pool_init(&fs->lfs_clpool, sizeof(struct lfs_cluster), 0, 0, 0,
+		"lfsclpl", &pool_allocator_nointr, IPL_NONE);
+	pool_init(&fs->lfs_segpool, sizeof(struct segment), 0, 0, 0,
+		"lfssegpool", &pool_allocator_nointr, IPL_NONE);
+	/* XXX: should this int32 be 32/64? */
+	maxbpp = ((lfs_sb_getsumsize(fs) - SEGSUM_SIZE(fs)) / sizeof(int32_t) + 2);
+	maxbpp = MIN(maxbpp, lfs_segsize(fs) / lfs_sb_getfsize(fs) + 2);
+	pool_init(&fs->lfs_bpppool, maxbpp * sizeof(struct buf *), 0, 0, 0,
+		"lfsbpppl", &pool_allocator_nointr, IPL_NONE);
+}
+
+void
+lfs_free_resblks(struct lfs *fs)
+{
+	int i;
+
+	pool_destroy(&fs->lfs_bpppool);
+	pool_destroy(&fs->lfs_segpool);
+	pool_destroy(&fs->lfs_clpool);
+
+	mutex_enter(&lfs_lock);
+	for (i = 0; i < LFS_N_TOTAL; i++) {
+		while (fs->lfs_resblk[i].inuse)
+			mtsleep(&fs->lfs_resblk, PRIBIO + 1, "lfs_free", 0,
+				&lfs_lock);
+		if (fs->lfs_resblk[i].p != NULL)
+			free(fs->lfs_resblk[i].p, M_SEGMENT);
+	}
+	free(fs->lfs_resblk, M_SEGMENT);
+	mutex_exit(&lfs_lock);
+}
+
+static unsigned int
+lfs_mhash(void *vp)
+{
+	return (unsigned int)(((unsigned long)vp) >> 2) % LFS_RESHASH_WIDTH;
+}
+
+/*
+ * Return memory of the given size for the given purpose, or use one of a
+ * number of spare last-resort buffers, if malloc returns NULL.
+ */
+void *
+lfs_malloc(struct lfs *fs, size_t size, int type)
+{
+	struct lfs_res_blk *re;
+	void *r;
+	int i, start;
+	unsigned int h;
+
+	ASSERT_MAYBE_SEGLOCK(fs);
+	r = NULL;
+
+	/* If no mem allocated for this type, it just waits */
+	if (lfs_res_qty[type] == 0) {
+		r = malloc(size, M_SEGMENT, M_WAITOK);
+		return r;
+	}
+
+	/* Otherwise try a quick malloc, and if it works, great */
+	if ((r = malloc(size, M_SEGMENT, M_NOWAIT)) != NULL) {
+		return r;
+	}
+
+	/*
+	 * If malloc returned NULL, we are forced to use one of our
+	 * reserve blocks.  We have on hand at least one summary block,
+	 * at least one cluster block, at least one superblock,
+	 * and several indirect blocks.
+	 */
+
+	mutex_enter(&lfs_lock);
+	/* skip over blocks of other types */
+	for (i = 0, start = 0; i < type; i++)
+		start += lfs_res_qty[i];
+	while (r == NULL) {
+		for (i = 0; i < lfs_res_qty[type]; i++) {
+			if (fs->lfs_resblk[start + i].inuse == 0) {
+				re = fs->lfs_resblk + start + i;
+				re->inuse = 1;
+				r = re->p;
+				KASSERT(re->size >= size);
+				h = lfs_mhash(r);
+				LIST_INSERT_HEAD(&fs->lfs_reshash[h], re, res);
+				mutex_exit(&lfs_lock);
+				return r;
+			}
+		}
+		DLOG((DLOG_MALLOC, "sleeping on %s (%d)\n",
+		      lfs_res_names[type], lfs_res_qty[type]));
+		mtsleep(&fs->lfs_resblk, PVM, "lfs_malloc", 0,
+			&lfs_lock);
+		DLOG((DLOG_MALLOC, "done sleeping on %s\n",
+		      lfs_res_names[type]));
+	}
+	/* NOTREACHED */
+	mutex_exit(&lfs_lock);
+	return r;
+}
+
+void
+lfs_free(struct lfs *fs, void *p, int type)
+{
+	unsigned int h;
+	res_t *re;
+
+	ASSERT_MAYBE_SEGLOCK(fs);
+	h = lfs_mhash(p);
+	mutex_enter(&lfs_lock);
+	LIST_FOREACH(re, &fs->lfs_reshash[h], res) {
+		if (re->p == p) {
+			KASSERT(re->inuse == 1);
+			LIST_REMOVE(re, res);
+			re->inuse = 0;
+			wakeup(&fs->lfs_resblk);
+			mutex_exit(&lfs_lock);
+			return;
+		}
+	}
+
+#ifdef notyet /* XXX this assert fires */
+	for (int i = 0; i < LFS_N_TOTAL; i++) {
+		KDASSERTMSG(fs->lfs_resblk[i].p == p,
+		    "lfs_free: inconsistent reserved block");
+	}
+#endif
+
+	mutex_exit(&lfs_lock);
+
+	/*
+	 * If we didn't find it, free it.
+	 */
+	free(p, M_SEGMENT);
+}
+
+/*
+ * Fragment lock.  This is a reader/writer lock controlling, primarily,
+ * the expansion of file fragments.
+ */
+void
+lfs_fraglock_enter(struct lfs *fs, int enter_exit)
+{
+	lfs_prelock(fs, 0);
+}
+
+bool
+lfs_fraglock_held(struct lfs *fs, int read_write)
+{
+	return lfs_prelock_held(fs);
+}
+
+void
+lfs_fraglock_exit(struct lfs *fs)
+{
+	lfs_preunlock(fs);
+}
+
+/*
+ * lfs_seglock --
+ *	Single thread the segment writer.
+ */
+int
+lfs_seglock(struct lfs *fs, unsigned long flags)
+{
+	struct segment *sp;
+	int error;
+
+	error = lfs_prelock(fs, flags);
+	if (error)
+		return error;
+
+	if (fs->lfs_seglock) {
+		++fs->lfs_seglock;
+		fs->lfs_sp->seg_flags |= flags;
+		return 0;
+	}
+
+	fs->lfs_seglock = 1;
+	fs->lfs_cleanind = 0;
+
+	LFS_ENTER_LOG("seglock", __FILE__, __LINE__, 0, flags, curproc->p_pid);
+
+	sp = fs->lfs_sp = pool_get(&fs->lfs_segpool, PR_WAITOK);
+	sp->bpp = pool_get(&fs->lfs_bpppool, PR_WAITOK);
+	sp->seg_flags = flags;
+	sp->vp = NULL;
+	sp->seg_iocount = 0;
+	sp->bytes_written = 0;
+	sp->gatherblock_loopcount = 0;
+	(void) lfs_initseg(fs, 0);
+
+	/*
+	 * Keep a cumulative count of the outstanding I/O operations.  If the
+	 * disk drive catches up with us it could go to zero before we finish,
+	 * so we artificially increment it by one until we've scheduled all of
+	 * the writes we intend to do.
+	 */
+	mutex_enter(&lfs_lock);
+	++fs->lfs_iocount;
+	fs->lfs_startseg = lfs_sb_getcurseg(fs);
+	mutex_exit(&lfs_lock);
+	return 0;
+}
+
+/*
+ * Create a marker inode.
+ */
+struct inode *
+lfs_create_marker(void)
+{
+	struct inode *marker;
+
+	marker = pool_get(&lfs_inode_pool, PR_WAITOK);
+	memset(marker, 0, sizeof(*marker));
+	marker->inode_ext.lfs = pool_get(&lfs_inoext_pool, PR_WAITOK);
+	memset(marker->inode_ext.lfs, 0, sizeof(*marker->inode_ext.lfs));
+	marker->i_state |= IN_MARKER;
+
+	return marker;
+}
+
+void
+lfs_destroy_marker(struct inode *marker)
+{
+	pool_put(&lfs_inoext_pool, marker->inode_ext.lfs);
+	pool_put(&lfs_inode_pool, marker);
+}
+
+static void lfs_unmark_dirop(struct lfs *);
+
+static void
+lfs_unmark_dirop(struct lfs *fs)
+{
+	struct inode *ip, *marker;
+	struct vnode *vp;
+	int doit;
+
+	KASSERT(fs != NULL);
+	ASSERT_NO_SEGLOCK(fs);
+	mutex_enter(&lfs_lock);
+	doit = !(fs->lfs_flags & LFS_UNDIROP);
+	if (doit)
+		fs->lfs_flags |= LFS_UNDIROP;
+	mutex_exit(&lfs_lock);
+
+	if (!doit)
+		return;
+
+	marker = lfs_create_marker();
+	
+	mutex_enter(&lfs_lock);
+	TAILQ_INSERT_HEAD(&fs->lfs_dchainhd, marker, i_lfs_dchain);
+	while ((ip = TAILQ_NEXT(marker, i_lfs_dchain)) != NULL) {
+		TAILQ_REMOVE(&fs->lfs_dchainhd, marker, i_lfs_dchain);
+		TAILQ_INSERT_AFTER(&fs->lfs_dchainhd, ip, marker,
+		    i_lfs_dchain);
+		if (ip->i_state & IN_MARKER)
+			continue;
+		vp = ITOV(ip);
+		if ((ip->i_state & (IN_ADIROP | IN_CDIROP)) == IN_CDIROP) {
+			--lfs_dirvcount;
+			--fs->lfs_dirvcount;
+			vp->v_uflag &= ~VU_DIROP;
+			TAILQ_REMOVE(&fs->lfs_dchainhd, ip, i_lfs_dchain);
+			wakeup(&lfs_dirvcount);
+			fs->lfs_unlockvp = vp;
+			mutex_exit(&lfs_lock);
+			vrele(vp);
+			mutex_enter(&lfs_lock);
+			fs->lfs_unlockvp = NULL;
+			ip->i_state &= ~IN_CDIROP;
+		}
+	}
+	TAILQ_REMOVE(&fs->lfs_dchainhd, marker, i_lfs_dchain);
+	fs->lfs_flags &= ~LFS_UNDIROP;
+	wakeup(&fs->lfs_flags);
+	mutex_exit(&lfs_lock);
+
+	lfs_destroy_marker(marker);
+}
+
+/*
+ * Run through the segment list promoting empty segments.
+ *
+ * XXX We should keep a list of segments that have reached
+ * XXX su_nbytes == 0 (or blocks containing their SEGUSEs)
+ * XXX and process that, presumably much smaller, list
+ * XXX instead of always looking at every segment.
+ */
+void
+lfs_auto_segclean(struct lfs *fs)
+{
+	int i, j, waited, changed, any_changed;
+	SEGUSE *sup;
+	struct buf *bp;
+
+	waited = 0;
+	any_changed = 0;
+	for (i = 0; i < lfs_sb_getnseg(fs); i+= lfs_sb_getsepb(fs)) {
+		LFS_SEGENTRY(sup, fs, i, bp);
+		changed = 0;
+		for (j = 0; j < lfs_sb_getsepb(fs); j++) {
+			if (i + j >= lfs_sb_getnseg(fs))
+				break;
+			if (sup->su_nbytes == 0) {
+				switch (sup->su_flags & (SEGUSE_ACTIVE
+					| SEGUSE_DIRTY
+					| SEGUSE_EMPTY
+					| SEGUSE_READY)) {
+				case SEGUSE_DIRTY:
+					sup->su_flags |= SEGUSE_EMPTY;
+					++changed;
+					break;
+
+				case SEGUSE_DIRTY | SEGUSE_EMPTY:
+					sup->su_flags |= SEGUSE_READY;
+					++changed;
+					break;
+
+				case SEGUSE_DIRTY
+					| SEGUSE_EMPTY
+					| SEGUSE_READY:
+					/* Make sure the sb is written */
+					mutex_enter(&lfs_lock);
+					while (waited == 0
+					       && fs->lfs_sbactive) {
+						mtsleep(&fs->lfs_sbactive,
+							PRIBIO+1, "lfs asb",
+							0, &lfs_lock);
+					}
+					mutex_exit(&lfs_lock);
+					waited = 1;
+
+					lfs_markclean(fs, i + j, sup, 0,
+						      NOCRED, curlwp);
+					++changed;
+					break;
+
+				default:
+					break;
+				}
+			}
+			LFS_SEGENTRY_NEXT(sup, fs);
+		}
+		if (changed) {
+			++any_changed;
+			LFS_WRITESEGENTRY(sup, fs, i, bp);
+		} else
+			LFS_RELEASESEGENTRY(sup, fs, i, bp);
+	}
+	if (any_changed)
+		wakeup(&fs->lfs_availsleep);
+}
+
+bool
+lfs_seglock_held(struct lfs *fs)
+{
+	return lfs_prelock_held(fs) && fs->lfs_seglock != 0;
+}
+
+/*
+ * lfs_segunlock --
+ *	Single thread the segment writer.
+ */
+void
+lfs_segunlock(struct lfs *fs)
+{
+	struct segment *sp;
+	unsigned long sync, ckp;
+	struct buf *bp;
+	int do_unmark_dirop = 0;
+
+	sp = fs->lfs_sp;
+
+	if (!LFS_SEGLOCK_HELD(fs))
+		panic("lfs seglock not held");
+
+	if (fs->lfs_seglock == 1) {
+		if ((sp->seg_flags & SEGM_CLEAN) == 0)
+			do_unmark_dirop = 1;
+		sync = sp->seg_flags & SEGM_SYNC;
+		ckp = sp->seg_flags & SEGM_CKP;
+
+		/* We should have a segment summary, and nothing else */
+		KASSERT(sp->cbpp == sp->bpp + 1);
+
+		/* Free allocated segment summary */
+		lfs_sb_suboffset(fs, lfs_btofsb(fs, lfs_sb_getsumsize(fs)));
+		bp = *sp->bpp;
+		lfs_freebuf(fs, bp);
+
+		pool_put(&fs->lfs_bpppool, sp->bpp);
+		sp->bpp = NULL;
+
+		/*
+		 * If we're not sync, we're done with sp, get rid of it.
+		 * Otherwise, we keep a local copy around but free
+		 * fs->lfs_sp so another process can use it (we have to
+		 * wait but they don't have to wait for us).
+		 */
+		if (!sync)
+			pool_put(&fs->lfs_segpool, sp);
+		fs->lfs_sp = NULL;
+
+		/*
+		 * If the I/O count is non-zero, sleep until it reaches zero.
+		 * At the moment, the user's process hangs around so we can
+		 * sleep.
+		 */
+		mutex_enter(&lfs_lock);
+		if (--fs->lfs_iocount <= 1)
+			wakeup(&fs->lfs_iocount);
+		mutex_exit(&lfs_lock);
+
+		/*
+		 * If we're not checkpointing, we don't have to block
+		 * other processes to wait for a synchronous write
+		 * to complete.
+		 */
+		if (!ckp) {
+			LFS_ENTER_LOG("segunlock_std", __FILE__, __LINE__, 0, 0, curproc->p_pid);
+
+			--fs->lfs_seglock;
+		}
+		/*
+		 * We let checkpoints happen asynchronously.  That means
+		 * that during recovery, we have to roll forward between
+		 * the two segments described by the first and second
+		 * superblocks to make sure that the checkpoint described
+		 * by a superblock completed.
+		 */
+		mutex_enter(&lfs_lock);
+		while (ckp && sync && fs->lfs_iocount) {
+			(void)mtsleep(&fs->lfs_iocount, PRIBIO + 1,
+				      "lfs_iocount", 0, &lfs_lock);
+			DLOG((DLOG_SEG, "sleeping on iocount %x == %d\n", fs, fs->lfs_iocount));
+		}
+		while (sync && sp->seg_iocount) {
+			(void)mtsleep(&sp->seg_iocount, PRIBIO + 1,
+				     "seg_iocount", 0, &lfs_lock);
+			DLOG((DLOG_SEG, "sleeping on iocount %x == %d\n", sp, sp->seg_iocount));
+		}
+		mutex_exit(&lfs_lock);
+		if (sync)
+			pool_put(&fs->lfs_segpool, sp);
+
+		if (ckp) {
+			fs->lfs_nactive = 0;
+			/* If we *know* everything's on disk, write both sbs */
+			/* XXX should wait for this one	 */
+			if (sync)
+				lfs_writesuper(fs, lfs_sb_getsboff(fs, fs->lfs_activesb));
+			lfs_writesuper(fs, lfs_sb_getsboff(fs, 1 - fs->lfs_activesb));
+			if (!(fs->lfs_ivnode->v_mount->mnt_iflag &
+			      (IMNT_UNMOUNT | IMNT_WANTRDONLY))) {
+				lfs_auto_segclean(fs);
+				/* If sync, we can clean the remainder too */
+				if (sync)
+					lfs_auto_segclean(fs);
+			}
+			fs->lfs_activesb = 1 - fs->lfs_activesb;
+
+			LFS_ENTER_LOG("segunlock_ckp", __FILE__, __LINE__, 0, 0, curproc->p_pid);
+
+			--fs->lfs_seglock;
+		}
+		if (do_unmark_dirop)
+			lfs_unmark_dirop(fs);
+	} else {
+		--fs->lfs_seglock;
+		KASSERT(fs->lfs_seglock != 0);
+	}
+
+	lfs_preunlock(fs);
+}
+
+/*
+ * Single thread the cleaner.
+ */
+int
+lfs_cleanerlock(struct lfs *fs)
+{
+	int error;
+	
+	mutex_enter(&lfs_lock);
+	while (fs->lfs_cleanlock) {
+		printf("cleanlock=%p, waiting\n", fs->lfs_cleanlock);
+		error = cv_wait_sig(&fs->lfs_cleanercv, &lfs_lock);
+		if (error)
+			break;
+	}
+	if (error == 0)
+		fs->lfs_cleanlock = curlwp;
+	mutex_exit(&lfs_lock);
+
+	return error;
+}
+
+/*
+ * Check whether we hold the cleaner lock.
+ */
+int
+lfs_cleanerlock_held(struct lfs *fs)
+{
+	int retval = 0;
+	
+	mutex_enter(&lfs_lock);
+	retval = (fs->lfs_cleanlock == curlwp);
+	mutex_exit(&lfs_lock);
+
+	return retval;
+}
+
+/*
+ * Single thread the cleaner.
+ */
+void
+lfs_cleanerunlock(struct lfs *fs)
+{
+	struct inode *ip;
+	
+	/* Clear out the cleaning list */
+	while ((ip = TAILQ_FIRST(&fs->lfs_cleanhd)) != NULL)
+		lfs_clrclean(fs, ITOV(ip));
+	
+	mutex_enter(&lfs_lock);
+	fs->lfs_cleanlock = NULL;
+	cv_broadcast(&fs->lfs_cleanercv);
+	mutex_exit(&lfs_lock);
+}
+
+/*
+ * Preventative / prerequisite lock.
+ * This is the "lock" part of the segment lock,
+ * though it can also be taken independently to
+ * prevent segment writing.
+ */
+int
+lfs_prelock(struct lfs *fs, unsigned long flags)
+{
+	int error;
+
+	mutex_enter(&lfs_lock);
+
+	error = 0;
+	if (fs->lfs_prelock) {
+		if (fs->lfs_prelocklwp == curlwp) {
+			/* Locked by us already */
+			++fs->lfs_prelock;
+			goto errout;
+		} else if (flags & SEGM_PAGEDAEMON) {
+			/* Pagedaemon cannot wait */
+			error = EWOULDBLOCK;
+			goto errout;
+		} else {
+			/* Wait for lock */
+			while (fs->lfs_prelock) {
+				cv_wait(&fs->lfs_prelockcv, &lfs_lock);
+			}
+		}
+	}
+
+	/* Acquire lock */
+	fs->lfs_prelock = 1;
+	fs->lfs_prelocklwp = curlwp;
+
+	mutex_exit(&lfs_lock);
+	EXCL_IFLOCK(fs);
+	return 0;
+
+ errout:
+	mutex_exit(&lfs_lock);
+	return error;
+}
+
+bool
+lfs_prelock_held(struct lfs *fs)
+{
+	bool held;
+	bool waslocked;
+
+	waslocked = mutex_owned(&lfs_lock);
+	if (!waslocked)
+		mutex_enter(&lfs_lock);
+
+	held = (fs->lfs_prelock && fs->lfs_prelocklwp == curlwp);
+
+	if (!waslocked)
+		mutex_exit(&lfs_lock);
+
+	return held;
+}
+
+void
+lfs_preunlock(struct lfs *fs)
+{
+	int last = 0;
+
+	mutex_enter(&lfs_lock);
+	last = (fs->lfs_prelock == 1);
+	mutex_exit(&lfs_lock);
+	if (last)
+		UNEXCL_IFLOCK(fs);
+
+	mutex_enter(&lfs_lock);
+	if (--fs->lfs_prelock > 0) {
+		mutex_exit(&lfs_lock);
+		return;
+	}
+
+	fs->lfs_prelocklwp = NULL;
+	cv_broadcast(&fs->lfs_prelockcv);
+	mutex_exit(&lfs_lock);
+}
+
+/*
+ * Drain dirops and start writer.
+ *
+ * No simple_locks are held when we enter and none are held when we return.
+ */
+void
+lfs_writer_enter(struct lfs *fs, const char *wmesg)
+{
+	int error __diagused;
+
+	ASSERT_NO_SEGLOCK(fs);
+	mutex_enter(&lfs_lock);
+
+	/* disallow dirops during flush */
+	fs->lfs_writer++;
+
+	while (fs->lfs_dirops > 0) {
+		++fs->lfs_diropwait;
+		error = mtsleep(&fs->lfs_writer, PRIBIO+1, wmesg, 0,
+				&lfs_lock);
+		KASSERT(error == 0);
+		--fs->lfs_diropwait;
+	}
+
+	mutex_exit(&lfs_lock);
+}
+
+int
+lfs_writer_tryenter(struct lfs *fs)
+{
+	int writer_set;
+
+	ASSERT_MAYBE_SEGLOCK(fs);
+	mutex_enter(&lfs_lock);
+	writer_set = (fs->lfs_dirops == 0);
+	if (writer_set)
+		fs->lfs_writer++;
+	mutex_exit(&lfs_lock);
+
+	return writer_set;
+}
+
+void
+lfs_writer_leave(struct lfs *fs)
+{
+	bool dowakeup;
+
+	ASSERT_MAYBE_SEGLOCK(fs);
+	mutex_enter(&lfs_lock);
+	dowakeup = !(--fs->lfs_writer);
+	if (dowakeup)
+		cv_broadcast(&fs->lfs_diropscv);
+	mutex_exit(&lfs_lock);
+}
+
+/*
+ * Unlock, wait for the cleaner, then relock to where we were before.
+ * To be used only at a fairly high level, to address a paucity of free
+ * segments propagated back from lfs_gop_write().
+ */
+void
+lfs_segunlock_relock(struct lfs *fs)
+{
+	int n = fs->lfs_seglock;
+	u_int16_t seg_flags;
+	CLEANERINFO *cip;
+	struct buf *bp;
+
+	if (n == 0)
+		return;
+
+	/* Write anything we've already gathered to disk */
+	lfs_writeseg(fs, fs->lfs_sp);
+
+	/* Tell cleaner */
+	mutex_enter(&lfs_lock);
+	fs->lfs_flags |= LFS_MUSTCLEAN;
+	mutex_exit(&lfs_lock);
+	LFS_CLEANERINFO(cip, fs, bp);
+	lfs_ci_setflags(fs, cip,
+			lfs_ci_getflags(fs, cip) | LFS_CLEANER_MUST_CLEAN);
+	LFS_SYNC_CLEANERINFO(cip, fs, bp, 1);
+
+	/* Save segment flags for later */
+	seg_flags = fs->lfs_sp->seg_flags;
+
+	while(fs->lfs_seglock)
+		lfs_segunlock(fs);
+
+	/* Wait for the cleaner */
+	lfs_wakeup_cleaner(fs);
+	mutex_enter(&lfs_lock);
+	while (LFS_STARVED_FOR_SEGS(fs))
+		mtsleep(&fs->lfs_availsleep, PRIBIO, "relock", 0,
+			&lfs_lock);
+	mutex_exit(&lfs_lock);
+
+	/* Put the segment lock back the way it was. */
+	while(n--)
+		lfs_seglock(fs, seg_flags);
+
+	/* Cleaner can relax now */
+	mutex_enter(&lfs_lock);
+	fs->lfs_flags &= ~LFS_MUSTCLEAN;
+	mutex_exit(&lfs_lock);
+	LFS_CLEANERINFO(cip, fs, bp);
+	lfs_ci_setflags(fs, cip,
+			lfs_ci_getflags(fs, cip) & ~LFS_CLEANER_MUST_CLEAN);
+	LFS_SYNC_CLEANERINFO(cip, fs, bp, 1);
+
+	return;
+}
+
+/*
+ * Wake up the cleaner, provided that nowrap is not set.
+ */
+void
+lfs_wakeup_cleaner(struct lfs *fs)
+{
+	if (fs->lfs_nowrap > 0)
+		return;
+
+	cv_broadcast(&fs->lfs_nextsegsleep);
+	cv_broadcast(&lfs_allclean_wakeup);
+}
+
+/*
+ * If it wasn't already on the cleaning list,
+ * add it and take a reference.  We will clear
+ * the list before dropping the seglock.
+ */
+void
+lfs_setclean(struct lfs *fs, struct vnode *vp)
+{
+	struct inode *ip;
+
+	KASSERT(lfs_cleanerlock_held(fs));
+
+	vref(vp);
+	
+	ip = VTOI(vp);
+	mutex_enter(&lfs_lock);
+	if (ip->i_state & IN_CLEANING) {
+		mutex_exit(&lfs_lock);
+		vrele(vp);
+		return;
+	}
+
+	TAILQ_INSERT_HEAD(&fs->lfs_cleanhd, ip, i_lfs_clean);
+	LFS_SET_UINO(VTOI(vp), IN_CLEANING);
+	mutex_exit(&lfs_lock);
+}
+
+/*
+ * Remove a vnode from the cleaning list,
+ * clear IN_CLEANING and drop the reference.
+ * Find any invalid buffers on the vnode and
+ * toss them.
+ */
+void
+lfs_clrclean(struct lfs *fs, struct vnode *vp)
+{
+	struct inode *ip;
+
+	KASSERT(lfs_cleanerlock_held(fs));
+
+	ip = VTOI(vp);
+	mutex_enter(&lfs_lock);
+	if (!(ip->i_state & IN_CLEANING)) {
+		mutex_exit(&lfs_lock);
+		return;
+	}
+	mutex_exit(&lfs_lock);
+
+	if (vp->v_type == VREG && vp != fs->lfs_ivnode)
+		lfs_ungather(fs, NULL, vp, lfs_match_data);
+	
+	mutex_enter(&lfs_lock);
+	TAILQ_REMOVE(&fs->lfs_cleanhd, ip, i_lfs_clean);
+	LFS_CLR_UINO(VTOI(vp), IN_CLEANING);
+	mutex_exit(&lfs_lock);
+	vrele(vp);
+}
+
+/*
+ * Remove the specified flag from all segments.
+ */
+void
+lfs_seguse_clrflag_all(struct lfs *fs, uint32_t flag)
+{
+	SEGUSE *sup;
+	struct buf *bp;
+	int i;
+
+	for (i = 0; i < lfs_sb_getnseg(fs); i++) {
+		LFS_SEGENTRY(sup, fs, i, bp);
+		if (sup->su_flags & flag) {
+			sup->su_flags &= ~flag;
+			LFS_WRITESEGENTRY(sup, fs, i, bp);
+		} else
+			LFS_RELEASESEGENTRY(sup, fs, i, bp);
+	}
+}
+

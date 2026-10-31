@@ -1,0 +1,4 @@
+# $NetBSD: md.i386,v 1.13 2024/07/11 20:41:08 riastradh Exp $
+#
+./boot.cfg					etc-sys-etc
+./etc/ttyaction					etc-sys-etc

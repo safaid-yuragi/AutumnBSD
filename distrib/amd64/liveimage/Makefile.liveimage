@@ -1,0 +1,18 @@
+#	$NetBSD: Makefile.liveimage,v 1.4 2025/02/02 03:19:37 tsutsui Exp $
+
+.include <bsd.own.mk>
+
+KERN_SET=		kern-GENERIC
+IMGFFSVERSION=		2
+PRIMARY_BOOT=		bootxx_ffsv2
+SECONDARY_BOOT=		boot
+SECONDARY_BOOT_ARG=	# unnecessary
+
+EFIBOOT=		${WORKDIR}/usr/mdec/bootx64.efi
+EFIBOOT+=		${WORKDIR}/usr/mdec/bootia32.efi
+
+USE_MBR=		yes
+USE_GPT=		yes
+USE_GPTMBR=		yes
+
+.include "${.CURDIR}/../../../common/bootimage/Makefile.liveimage"

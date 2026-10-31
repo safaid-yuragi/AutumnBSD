@@ -1,0 +1,63 @@
+#	$NetBSD: genassym.cf,v 1.45 2026/04/20 09:47:46 thorpej Exp $
+
+#
+# Copyright (c) 1982, 1990, 1993
+#	The Regents of the University of California.  All rights reserved.
+#
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. Neither the name of the University nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+#
+# THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+# ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+# IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+# ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+# FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+# DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+# OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+# HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+# LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+# OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+# SUCH DAMAGE.
+#
+#	@(#)genassym.c	8.3 (Berkeley) 1/4/94
+#
+
+# values for systype
+define	NEWS1700		NEWS1700
+define	NEWS1200		NEWS1200
+
+# Transparent translation register values (from pmap.h)
+# Used in mmu_subr.s
+define	MACHINE_TT0		NEWS68K_TT_IO
+define	MACHINE_TT1		NEWS68K_TT_PROM
+
+# interrupt/fault metering
+define	AST_INTRCNT		((sizeof(struct evcnt)*1) + offsetof(struct evcnt, ev_count32))
+define	NMI_INTRCNT		((sizeof(struct evcnt)*7) + offsetof(struct evcnt, ev_count32))
+
+# magic
+define	INTIOBASE1700		INTIOBASE1700
+define	INTIOTOP1700		INTIOTOP1700
+define	CTRL_POWER1700		CTRL_POWER1700
+define	CTRL_LED1700		CTRL_LED1700
+define	INTIOBASE1200		INTIOBASE1200
+define	INTIOTOP1200		INTIOTOP1200
+define	CTRL_POWER1200		CTRL_POWER1200
+define	CTRL_LED1200		CTRL_LED1200
+
+define	CACHE_ON_DFLT		(CACHE2030_ON | CACHE2030_BE)
+define	IC_CLR_DFLT		_IC_CLEAR(CACHE2030_ON | CACHE2030_BE)
+define	DC_CLR_DFLT		_DC_CLEAR(CACHE2030_ON | CACHE2030_BE)
+
+define	CACHE_ON_EC		CACHE2030_ON
+define	IC_CLR_EC		_IC_CLEAR(CACHE2030_ON)
+define	DC_CLR_EC		_DC_CLEAR(CACHE2030_ON)

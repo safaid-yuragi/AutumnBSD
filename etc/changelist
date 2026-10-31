@@ -1,0 +1,14 @@
+#	$NetBSD: changelist,v 1.26 2026/01/03 07:09:29 jnemeth Exp $
+#
+# Locally added list of files which /etc/security backs up and
+# checks for modifications, along with the list generated with
+# mtree(8) from:
+#	/etc/mtree/special
+#	/etc/mtree/special.local
+# and files matching:
+#	/etc/ifconfig.* 
+#	/etc/raid*.conf
+#	/etc/rc.d/*
+#	/etc/rc.conf.d/*
+#	/etc/lvm/archive/*
+#	/etc/lvm/backup/*

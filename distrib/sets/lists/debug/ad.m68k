@@ -1,0 +1,5 @@
+# $NetBSD: ad.m68k,v 1.4 2024/07/11 20:41:07 riastradh Exp $
+#
+./usr/lib/libm68k_g.a				comp-c-debuglib		debuglib
+./usr/libdata/debug/usr/bin/elf2aout.debug	comp-sysutil-debug	debug
+./usr/libdata/debug/usr/bin/fdformat.debug	comp-util-debug		debug

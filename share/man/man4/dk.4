@@ -1,0 +1,183 @@
+.\"	$NetBSD: dk.4,v 1.17 2024/11/09 03:22:25 charlotte Exp $
+.\"
+.\" Copyright (c) 2006 The NetBSD Foundation, Inc.
+.\" All rights reserved.
+.\"
+.\" This code is derived from software contributed to The NetBSD Foundation
+.\" by Jason R. Thorpe.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+.\" ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+.\" TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+.\" PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+.\" BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+.\" CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+.\" SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+.\" INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+.\" CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+.\" ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+.\" POSSIBILITY OF SUCH DAMAGE.
+.\"
+.\" Jonathan A. Kollasch used vnd(4) as the template for this man page.
+.\"
+.Dd April 2, 2024
+.Dt DK 4
+.Os
+.Sh NAME
+.Nm dk
+.Nd disk partition
+.Pq wedge
+driver
+.Sh SYNOPSIS
+.Cd "options DKWEDGE_AUTODISCOVER"
+.Cd "options DKWEDGE_METHOD_APPLE"
+.Cd "options DKWEDGE_METHOD_BSDLABEL"
+.Cd "options DKWEDGE_METHOD_GPT"
+.Cd "options DKWEDGE_METHOD_MBR"
+.Cd "options DKWEDGE_METHOD_RDB"
+.Cd "options DKWEDGE_METHOD_TOS"
+.Sh DESCRIPTION
+The
+.Nm
+driver provides a disk-like interface, or
+.Em wedge ,
+to an area of a physical disk.
+Wedges may be configured manually with
+.Xr dkctl 8
+or automatically by the kernel upon the attachment of the physical disk.
+.Pp
+Wedges need to have unique names.
+If a duplicate name is detected during
+auto-discovery, that partition is ignored.
+.Sh KERNEL OPTIONS
+.Bl -tag -width Dv
+.\"
+.It Dv DKWEDGE_AUTODISCOVER
+Automatically detect and configure wedges using any available methods.
+For each partition found, a wedge with a corresponding name is created.
+.Pp
+Currently only
+.Dv DKWEDGE_METHOD_GPT
+and
+.Dv DKWEDGE_METHOD_APPLE
+are enabled by default.
+.\"
+.It Dv DKWEDGE_METHOD_APPLE
+Apple partition map detection method.
+.\"
+.It Dv DKWEDGE_METHOD_BSDLABEL
+.Tn BSD
+disklabel detection method.
+For each configured partition in the
+.Xr disklabel 5
+that is not of type
+.Dv FS_UNUSED ,
+a wedge is created and named after the
+.Fa d_packname
+field followed by
+.Ql \&/
+and the partition letter
+.Sm off
+.So Li a Sc \&.. So Li p Sc .
+.Sm on
+.Pp
+When the
+.Fa d_packname
+is empty or has the value
+.Ql fictitious ,
+the regular partition names
+are used as wedge names, i.e. the device name, unit number and
+partition letter, for example
+.Ql wd0a .
+.\"
+.It Dv DKWEDGE_METHOD_GPT
+Extensible Firmware Interface Globally Unique Identifier Partition Table
+.Tn ( GPT )
+detection method.
+.Pp
+For every GPT partition a wedge is created and named after the
+partition label.
+GPT partitions are UTF-16\(enencoded, this is converted into UTF-8.
+If a partition has no label, its UUID is used instead.
+.\"
+.It Dv DKWEDGE_METHOD_MBR
+IBM PC-compatible Master Boot Record
+.Tn ( MBR )
+partitioning detection method, with support for Extended MBRs.
+.Pp
+For every partition in the MBR a wedge is created and named like a
+regular partition name, i.e. the device name, unit number and a
+partition letter, for example
+.Ql wd0e .
+Primary partitions start with
+.Ql e ,
+extended partitions start with
+.Ql i .
+.\"
+.It Dv DKWEDGE_METHOD_RDB
+Amiga Rigid Disk Block
+.Tn ( RDB )
+partitioning detection method.
+.\"
+.It Dv DKWEDGE_METHOD_TOS
+Atari's
+.Tn TOS
+partition map detection method, for disks that conform to Atari's AHDI
+specification.
+.Pp
+For each partition, a wedge is created with a name of the format
+.Sm off
+.Li ATARI_ Bro Ar type Brc Li _ Bro Ar number Brc
+.Sm on
+where
+.Ar type
+may either be
+.Ql GEM
+or
+.Ql BGM .
+The number 0 partition typically corresponds to the
+.Ql C:
+drive when read on an actual Atari, the next to
+.Ql D:
+and so on.
+Extended partitions
+.Pq those of type Ql XGM
+are not currently supported.
+.El
+.Sh FILES
+.Bl -tag -width Pa -compact
+.It Pa /dev/dk*
+Block mode
+.Nm
+device special files.
+.It Pa /dev/rdk*
+Raw mode
+.Nm
+device special files.
+.El
+.Sh SEE ALSO
+.Xr config 1 ,
+.Xr disklabel 8 ,
+.Xr dkctl 8 ,
+.Xr fdisk 8 ,
+.Xr gpt 8 ,
+.Xr MAKEDEV 8
+.Sh HISTORY
+The
+.Nm
+driver first appeared in
+.Nx 3.0 .
+.Sh AUTHORS
+The
+.Nm
+driver was written by
+.An Jason R. Thorpe .

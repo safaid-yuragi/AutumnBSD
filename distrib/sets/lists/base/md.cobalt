@@ -1,0 +1,4 @@
+# $NetBSD: md.cobalt,v 1.12 2024/07/11 20:41:06 riastradh Exp $
+#
+./usr/mdec/boot					base-sysutil-bin
+./usr/mdec/installkernel			base-sysutil-bin

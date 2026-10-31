@@ -1,0 +1,3 @@
+# $NetBSD: module.mi,v 1.14 2024/07/11 20:41:06 riastradh Exp $
+#
+./var/db/obsolete/modules			base-sys-root

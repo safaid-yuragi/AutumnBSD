@@ -1,0 +1,166 @@
+%{
+/* $NetBSD: scan.l,v 1.144 2026/03/11 00:46:13 rillig Exp $ */
+
+/*
+ * Copyright (c) 1996 Christopher G. Demetriou.  All Rights Reserved.
+ * Copyright (c) 1994, 1995 Jochen Pohl
+ * All Rights Reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by Jochen Pohl for
+ *	The NetBSD Project.
+ * 4. The name of the author may not be used to endorse or promote products
+ *    derived from this software without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR
+ * IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES
+ * OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.
+ * IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY DIRECT, INDIRECT,
+ * INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT
+ * NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+ * DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+ * THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+ * (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF
+ * THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include <sys/cdefs.h>
+#if defined(__RCSID)
+__RCSID("$NetBSD: scan.l,v 1.144 2026/03/11 00:46:13 rillig Exp $");
+#endif
+
+#include "lint1.h"
+#include "cgram.h"
+
+%}
+
+
+HEX	[0-9A-Fa-f]
+EXP	([eE][+-]?[0-9]+)
+PEXP	(p[+-]?[0-9A-Fa-f]+)
+FSUF	([fFlL]?[i]?)
+
+punctuator_1	[\[\](){}.]|->
+punctuator_2	{punctuator_1}|\+\+|--|[&*+\-~!]
+punctuator_3	{punctuator_2}|\/|%|<<|>>|<|>|<=|>=|==|!=|\^|\||&&|\|\|
+punctuator_4	{punctuator_3}|\?|:|::|;|\.\.\.
+punctuator_5	{punctuator_4}|=|\*=|\/=|%=|\+=|-=|<<=|>>=|&=|\^=|\|=
+punctuator_6	{punctuator_5}|,|#|##
+punctuator_7	{punctuator_6}|<:|:>|<%|%>|%:|%:%:
+punctuator	{punctuator_7}|$|@
+
+%pointer
+%option nounput
+
+%x preprocessing
+
+%%
+
+[_A-Za-z][_A-Za-z0-9]*		return lex_name(yytext, yyleng);
+0[bB][01]+[lLuU]*		return lex_integer_constant(yytext, yyleng, 2);
+0[0-7]*[lLuU]*			return lex_integer_constant(yytext, yyleng, 8);
+[1-9][0-9]*[lLuU]*		return lex_integer_constant(yytext, yyleng, 10);
+0[xX]{HEX}+[lLuU]*		return lex_integer_constant(yytext, yyleng, 16);
+[0-9]+\.[0-9]*{EXP}?{FSUF}	|
+[0-9]+{EXP}{FSUF}		|
+0[xX]{HEX}+\.{HEX}*{PEXP}{FSUF}	|
+0[xX]{HEX}+{PEXP}{FSUF}		|
+\.[0-9]+{EXP}?{FSUF}		return lex_floating_constant(yytext, yyleng);
+"="				return T_ASSIGN;
+"*="				return lex_operator(T_OPASSIGN, MULASS);
+"/="				return lex_operator(T_OPASSIGN, DIVASS);
+"%="				return lex_operator(T_OPASSIGN, MODASS);
+"+="				return lex_operator(T_OPASSIGN, ADDASS);
+"-="				return lex_operator(T_OPASSIGN, SUBASS);
+"<<="				return lex_operator(T_OPASSIGN, SHLASS);
+">>="				return lex_operator(T_OPASSIGN, SHRASS);
+"&="				return lex_operator(T_OPASSIGN, ANDASS);
+"^="				return lex_operator(T_OPASSIGN, XORASS);
+"|="				return lex_operator(T_OPASSIGN, ORASS);
+"||"				return T_LOGOR;
+"&&"				return T_LOGAND;
+"|"				return T_BITOR;
+"&"				return T_AMPER;
+"^"				return T_BITXOR;
+"=="				return lex_operator(T_EQUALITY, EQ);
+"!="				return lex_operator(T_EQUALITY, NE);
+"<"				return lex_operator(T_RELATIONAL, LT);
+">"				return lex_operator(T_RELATIONAL, GT);
+"<="				return lex_operator(T_RELATIONAL, LE);
+">="				return lex_operator(T_RELATIONAL, GE);
+"<<"				return lex_operator(T_SHIFT, SHL);
+">>"				return lex_operator(T_SHIFT, SHR);
+"++"				return yylval.y_inc = true, T_INCDEC;
+"--"				return yylval.y_inc = false, T_INCDEC;
+"->"				return T_ARROW;
+"."				return T_POINT;
+"+"				return lex_operator(T_ADDITIVE, PLUS);
+"-"				return lex_operator(T_ADDITIVE, MINUS);
+"*"				return T_ASTERISK;
+"/"				return lex_operator(T_MULTIPLICATIVE, DIV);
+"%"				return lex_operator(T_MULTIPLICATIVE, MOD);
+"!"				return T_LOGNOT;
+"~"				return T_COMPLEMENT;
+"\""				return lex_string();
+"L\""				return lex_wide_string();
+";"				return T_SEMI;
+"{"				return T_LBRACE;
+"}"				return T_RBRACE;
+","				return T_COMMA;
+":"				return T_COLON;
+"?"				return T_QUEST;
+"["				return T_LBRACK;
+"]"				return T_RBRACK;
+"("				return T_LPAREN;
+")"				return T_RPAREN;
+"..."				return T_ELLIPSIS;
+"::"				return T_DCOLON;
+"'"				return lex_character_constant();
+"L'"				return lex_wide_character_constant();
+\n				lex_next_line();
+\t|" "|\f|\v			;
+"/*"				lex_comment();
+"//"				lex_slash_slash_comment();
+
+^#				{
+					BEGIN preprocessing;
+					lex_pp_begin();
+				}
+<preprocessing>[_A-Za-z][_A-Za-z0-9]*	lex_pp_identifier(yytext);
+<preprocessing>\.?[0-9]('?[_A-Za-z0-9]|[EePp][-+][0-9]+|\.)*	lex_pp_number(yytext);
+<preprocessing>\'		lex_pp_character_constant();
+<preprocessing>\"		lex_pp_string_literal();
+<preprocessing>{punctuator}	lex_pp_punctuator(yytext);
+<preprocessing>\/\*		lex_pp_comment();
+<preprocessing>[ \f\t\v]+	lex_pp_whitespace();
+<preprocessing>.		lex_unknown_character(yytext[0]);
+<preprocessing>\n		{
+					lex_pp_end();
+					lex_next_line();
+					BEGIN INITIAL;
+				}
+
+.				lex_unknown_character(yytext[0]);
+
+%%
+
+/*
+ * In the above list of regular expressions, the tokens for character
+ * constants, string literals and comments are incomplete; they only match
+ * a prefix.  The remainder of these tokens is scanned by reading bytes
+ * directly from the input stream.
+ */
+int
+lex_input(void)
+{
+	return input();
+}

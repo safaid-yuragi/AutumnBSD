@@ -1,0 +1,127 @@
+/*	$NetBSD: lock_stubs.s,v 1.13 2026/03/24 06:00:40 thorpej Exp $	*/
+
+/*-
+ * Copyright (c) 2007 The NetBSD Foundation, Inc.
+ * All rights reserved.
+ *
+ * This code is derived from software contributed to The NetBSD Foundation
+ * by Andrew Doran and Michael Hitch.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+ * ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+ * TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+ * PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+ * BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+ * CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+ * SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+ * INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+ * CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+ * ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGE.
+ */
+
+#include "opt_lockdebug.h"
+
+#include <machine/asm.h>
+
+#include "assym.h"
+
+	.file	"lock_stubs.s"
+	.text
+
+#if defined(__mc68010__) || defined(__HAVE_M68K_BROKEN_RMC)
+/*
+ * int _atomic_cas_32(volatile uint32_t *val, uint32_t old, uint32_t new);
+ *
+ * We can't use the CAS instruction on all m68k platforms:
+ *
+ * ==> 68010 doesn't have it, so obviously we can't use it there.
+ *
+ * ==> Some platforms (notably, 68020-based hp300 machines) don't
+ *     support the indivisble READ-MODIFY-WRITE used by CAS, CAS2,
+ *     and TAS (presumably they have logic to assert /BERR when
+ *     the CPU asserts /RMC).
+ *
+ * So, for these platforms, we use a restartable atomic sequence.  This
+ * is checked for upon return from interrupt (see ATOMIC_CAS_CHECK() in
+ * <m68k/frame.h>), and if the return PC falls within the atomic sequence,
+ * the PC is reset to the beginning of the sequence.
+ *
+ * On platforms where this comes into play, atomic_cas_16() and
+ * atomic_cas_8() are provided by atomic_cas_by_cas32.c from libkern,
+ * which implements those functions in terms of atomic_cas_32().
+ */
+ENTRY(_atomic_cas_32)
+	movl	4(%sp),%a0
+
+	.globl _C_LABEL(_atomic_cas_ras_start)
+_C_LABEL(_atomic_cas_ras_start):
+	movl	(%a0),%d0
+	cmpl	8(%sp),%d0
+	jne	1f
+	movl	12(%sp),(%a0)
+	.globl	_C_LABEL(_atomic_cas_ras_end)
+_C_LABEL(_atomic_cas_ras_end):
+
+1:
+	movl	%d0, %a0	/* pointers return also in %a0 */
+	rts
+
+STRONG_ALIAS(atomic_cas_ptr,_atomic_cas_32)
+STRONG_ALIAS(_atomic_cas_ptr,_atomic_cas_32)
+STRONG_ALIAS(atomic_cas_uint,_atomic_cas_32)
+STRONG_ALIAS(_atomic_cas_uint,_atomic_cas_32)
+STRONG_ALIAS(atomic_cas_ulong,_atomic_cas_32)
+STRONG_ALIAS(_atomic_cas_ulong,_atomic_cas_32)
+STRONG_ALIAS(atomic_cas_32,_atomic_cas_32)
+STRONG_ALIAS(__sync_val_compare_and_swap_4,_atomic_cas_32)
+
+STRONG_ALIAS(atomic_cas_32_ni,_atomic_cas_32)
+STRONG_ALIAS(_atomic_cas_32_ni,_atomic_cas_32)
+
+STRONG_ALIAS(atomic_cas_ptr_ni,_atomic_cas_32)
+STRONG_ALIAS(_atomic_cas_ptr_ni,_atomic_cas_32)
+STRONG_ALIAS(atomic_cas_uint_ni,_atomic_cas_32)
+STRONG_ALIAS(_atomic_cas_uint_ni,_atomic_cas_32)
+STRONG_ALIAS(atomic_cas_ulong_ni,_atomic_cas_32)
+STRONG_ALIAS(_atomic_cas_ulong_ni,_atomic_cas_32)
+#endif /* __mc68010__ || __HAVE_M68K_BROKEN_RMC */
+
+#if !defined(LOCKDEBUG)
+
+#if !defined(__mc68010__) && !defined(__HAVE_M68K_BROKEN_RMC)
+/*
+ * void mutex_enter(kmutex_t *mtx);
+ */
+ENTRY(mutex_enter)
+	movq	#0,%d0
+	movl	_C_LABEL(curlwp),%d1
+	movl	4(%sp),%a0
+	casl	%d0,%d1,(%a0)
+	bnes	1f
+	rts
+1:	jra	_C_LABEL(mutex_vector_enter)
+
+/*
+ * void mutex_exit(kmutex_t *mtx);
+ */
+ENTRY(mutex_exit)
+	movl	_C_LABEL(curlwp),%d0
+	movq	#0,%d1
+	movl	4(%sp),%a0
+	casl	%d0,%d1,(%a0)
+	bnes	1f
+	rts
+1:	jra	_C_LABEL(mutex_vector_exit)
+#endif /* !__mc68010__ && !__HAVE_M68K_BROKEN_RMC */
+
+#endif	/* !LOCKDEBUG */

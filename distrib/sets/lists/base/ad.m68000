@@ -1,0 +1,3 @@
+# $NetBSD: ad.m68000,v 1.4 2024/07/11 20:41:05 riastradh Exp $
+#
+./sbin/edlabel					base-obsolete	obsolete

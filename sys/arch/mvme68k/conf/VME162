@@ -1,0 +1,32 @@
+#	$NetBSD: VME162,v 1.37 2026/08/05 01:01:47 thorpej Exp $
+#
+# Minimal kernel configuration file for MVME162.
+#
+
+include 	"arch/mvme68k/conf/std.mvme68k"
+
+#options 	INCLUDE_CONFIG_FILE	# embed config file in kernel binary
+
+# Boards this kernel supports; need at least one
+options 	MVME162
+
+maxusers	8
+
+include "arch/mvme68k/conf/std.minimal"
+
+## force NFS root and swap
+#config	netbsd		root on ? type nfs
+## "generic" boot (put root on boot device)
+config netbsd		root on ? type ?
+
+mainbus0	at root
+
+include 	"arch/mvme68k/conf/std.mvme16x_17x"
+include 	"arch/mvme68k/conf/std.mvme162_172"
+
+# Example VMEbus device
+#foo0 		at vme0 addr 0x10001000 am 0x0d irq 3 vect 0x80
+
+sd*		at scsibus? target ? lun ?
+st*		at scsibus? target ? lun ?
+cd*		at scsibus? target ? lun ?

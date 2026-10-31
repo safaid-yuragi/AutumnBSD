@@ -1,0 +1,8 @@
+# $NetBSD: md.sparc,v 1.7 2024/07/11 20:41:09 riastradh Exp $
+#
+./@MODULEDIR@/bpfjit				modules-base-kernel	kmod,sljit
+./@MODULEDIR@/bpfjit/bpfjit.kmod		modules-base-kernel	kmod,sljit
+./@MODULEDIR@/exec_elf32			modules-base-kernel	kmod
+./@MODULEDIR@/exec_elf32/exec_elf32.kmod	modules-base-kernel	kmod
+./@MODULEDIR@/sljit				modules-base-kernel	kmod,sljit
+./@MODULEDIR@/sljit/sljit.kmod			modules-base-kernel	kmod,sljit

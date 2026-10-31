@@ -1,0 +1,780 @@
+/*	$NetBSD: locore.s,v 1.218 2026/03/29 03:24:56 thorpej Exp $	*/
+
+/*
+ * Copyright (c) 1980, 1990, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: locore.s 1.66 92/12/22$
+ *
+ *	@(#)locore.s	8.6 (Berkeley) 5/27/94
+ */
+
+/*
+ * Copyright (c) 1994, 1995 Gordon W. Ross
+ * Copyright (c) 1988 University of Utah.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ * from: Utah $Hdr: locore.s 1.66 92/12/22$
+ *
+ *	@(#)locore.s	8.6 (Berkeley) 5/27/94
+ */
+
+#include "opt_compat_netbsd.h"
+#include "opt_compat_sunos.h"
+#include "opt_ddb.h"
+#include "opt_fpsp.h"
+#include "opt_kgdb.h"
+#include "opt_lockdebug.h"
+#include "opt_fpu_emulate.h"
+#include "opt_m68k_arch.h"
+
+#include "assym.h"
+#include <machine/asm.h>
+#include <machine/trap.h>
+
+#include "opt_useleds.h"
+#ifdef USELEDS
+#include <hp300/hp300/leds.h>
+#endif
+
+#include "audio.h"
+#include "ksyms.h"
+
+#define MMUADDR(ar)	movl	_C_LABEL(MMUbase),ar
+#define CLKADDR(ar)	movl	_C_LABEL(CLKbase),ar
+
+/*
+ * This is for kvm_mkdb, and should be the address of the beginning
+ * of the kernel text segment (not necessarily the same as kernbase).
+ */
+	.text
+GLOBAL(kernel_text)
+
+/*
+ * Clear and skip the first page of text; it will not be mapped at
+ * VA 0.
+ *
+ * The bootloader places the bootinfo in this page, and we allocate
+ * a VA for it and map it later.
+ */
+	.fill	PAGE_SIZE/4,4,0
+
+/*
+ * Temporary stack for a variety of purposes.
+ * Try and make this the first thing is the data segment so it
+ * is page aligned.  Note that if we overflow here, we run into
+ * our text segment.
+ */
+	.data
+	.space	PAGE_SIZE
+ASGLOBAL(tmpstk)
+
+/*
+ * Macro to relocate a symbol, used before MMU is enabled.
+ */
+#define	IMMEDIATE		#
+#define	_RELOC(var, ar)			\
+	movel	IMMEDIATE var,ar;	\
+	addl	%a5,ar
+
+#define	RELOC(var, ar)		_RELOC(_C_LABEL(var), ar)
+#define	ASRELOC(var, ar)	_RELOC(_ASM_LABEL(var), ar)
+
+/*
+ * Final bits of grunt work required to reboot the system.  The MMU
+ * must be disabled when this is invoked.
+ */
+#define DOREBOOT						\
+	/* Reset Vector Base Register to what PROM expects. */  \
+	movl	#0,%d0;						\
+	movc	%d0,%vbr;					\
+	/* Jump to REQ_REBOOT */				\
+	jmp	0x1A4;
+
+/*
+ * Initialization
+ *
+ * A4 contains the address of the end of the symtab
+ * A5 contains physical load point from boot
+ * VBR contains zero from ROM.  Exceptions will continue to vector
+ * through ROM until MMU is turned on at which time they will vector
+ * through our table (vectors.s).
+ */
+
+BSS(lowram,4)
+BSS(esym,4)
+
+ASENTRY_NOPROFILE(start)
+	movw	#PSL_HIGHIPL,%sr	| no interrupts
+	ASRELOC(tmpstk, %a0)
+	movl	%a0,%sp			| give ourselves a temporary stack
+	RELOC(esym, %a0)
+	movl	%a4,%a0@		| store end of symbol table
+	RELOC(lowram, %a0)
+	movl	%a5,%a0@		| store start of physical memory
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| clear and disable on-chip cache(s)
+
+/* check for internal HP-IB in SYSFLAG */
+	btst	#5,0xfffffed2		| internal HP-IB?
+	jeq	Lhaveihpib		| yes, have HP-IB just continue
+	RELOC(internalhpib, %a0)
+	movl	#0,%a0@			| no, clear associated address
+Lhaveihpib:
+
+	RELOC(boothowto, %a0)		| save reboot flags
+	movl	%d7,%a0@
+	RELOC(bootdev, %a0)		|   and boot device
+	movl	%d6,%a0@
+
+	/*
+	 * All data registers are now free.  All address registers
+	 * except %a5 are free.  %a5 is used by the RELOC() macro,
+	 * and cannot be used until after the MMU is enabled.
+	 */
+
+/* determine our CPU/MMU combo - check for all regardless of kernel config */
+	movl	#INTIOBASE+MMUBASE,%a1
+	movl	#DC_FREEZE,%d0		| data freeze bit
+	movc	%d0,%cacr		|   only exists on 68030
+	movc	%cacr,%d0		| read it back
+	tstl	%d0			| zero?
+	jeq	Lnot68030		| yes, we have 68020/68040
+
+	/*
+	 * 68030 models
+	 */
+
+	RELOC(mmutype, %a0)		| no, we have 68030
+	movl	#MMU_68030,%a0@		| set to reflect 68030 PMMU
+	RELOC(cputype, %a0)
+	movl	#CPU_68030,%a0@		| and 68030 CPU
+	RELOC(machineid, %a0)
+	movl	#0x80,%a1@(MMUCMD)	| set magic cookie
+	movl	%a1@(MMUCMD),%d0	| read it back
+	btst	#7,%d0			| cookie still on?
+	jeq	Lnot370			| no, 360, 362 or 375
+	movl	#0,%a1@(MMUCMD)		| clear magic cookie
+	movl	%a1@(MMUCMD),%d0	| read it back
+	btst	#7,%d0			| still on?
+	jeq	Lisa370			| no, must be a 370
+	movl	#HP_340,%a0@		| yes, must be a 340
+	jra	Lstart1
+Lnot370:
+	movl	#HP_360,%a0@		| type is at least a 360
+	movl	#0,%a1@(MMUCMD)		| clear magic cookie2
+	movl	%a1@(MMUCMD),%d0	| read it back
+	btst	#16,%d0			| still on?
+	jeq	Lisa36x			| no, must be a 360 or a 362
+	RELOC(mmuid, %a0)		| save MMU ID
+	lsrl	#MMUID_SHIFT,%d0
+	andl	#MMUID_MASK,%d0
+	movl	%d0,%a0@
+	RELOC(machineid, %a0)
+	cmpb	#MMUID_345,%d0		| are we a 345?
+	beq	Lisa345
+	cmpb	#MMUID_375,%d0		| how about a 375?
+	beq	Lisa375
+	movl	#HP_400,%a0@		| must be a 400
+	jra	Lhaspac
+Lisa36x:
+	/*
+	 * If we found a 360, we need to check for a 362 (neither the 360
+	 * nor the 362 have a nonzero mmuid). Identify 362 by checking
+	 * on-board VRX framebuffer which has secid 0x11 at dio scode 132.
+	 */
+	movl	#DIOII_BASE,%a0		| probe dio scode 132
+	ASRELOC(phys_badaddr,%a3)
+	jbsr	%a3@
+	tstl	%d0			| device at scode 132?
+	jne	Lstart1			| no, not 362, assume 360
+	movb	%a0@(DIO_IDOFF),%d0
+	cmpb	#DIO_DEVICE_ID_FRAMEBUFFER,%d0	| framebuffer?
+	jne	Lstart1			| no, not 362, assume 360
+	movb	%a0@(DIO_SECIDOFF),%d0
+	cmpb	#0x11,%d0		| VRX sti on 362?
+	jne	Lstart1			| no, not 362, assume 360
+	RELOC(machineid,%a0)
+	movl	#HP_362,%a0@
+	jra	Lstart1
+Lisa345:
+	movl	#HP_345,%a0@
+	jra	Lhaspac
+Lisa375:
+	movl	#HP_375,%a0@
+	jra	Lhaspac
+Lisa370:
+	movl	#HP_370,%a0@		| set to 370
+Lhaspac:
+	RELOC(ectype, %a0)
+	movl	#EC_PHYS,%a0@		| also has a physical address cache
+	jra	Lstart1
+
+	/*
+	 * End of 68030 section
+	 */
+
+Lnot68030:
+	bset	#31,%d0			| data cache enable bit
+	movc	%d0,%cacr		|   only exists on 68040
+	movc	%cacr,%d0		| read it back
+	tstl	%d0			| zero?
+	beq	Lis68020		| yes, we have 68020
+	moveq	#0,%d0			| now turn it back off
+	movec	%d0,%cacr		|   before we access any data
+
+	/*
+	 * 68040 models
+	 */
+
+	RELOC(mmutype, %a0)
+	movl	#MMU_68040,%a0@		| with a 68040 MMU
+	RELOC(cputype, %a0)
+	movl	#CPU_68040,%a0@		| and a 68040 CPU
+	RELOC(fputype, %a0)
+	movl	#FPU_68040,%a0@		| ...and FPU
+	RELOC(ectype, %a0)
+	movl	#EC_NONE,%a0@		| and no cache (for now XXX)
+	RELOC(mmuid,%a0)		| save MMU ID
+	movl	%a1@(MMUCMD),%d0
+	lsrl	#MMUID_SHIFT,%d0
+	andl	#MMUID_MASK,%d0
+	movl	%d0,%a0@
+	RELOC(machineid, %a0)
+	cmpb	#MMUID_425_T,%d0	| are we a 425t?
+	jeq	Lisa425
+	cmpb	#MMUID_425_S,%d0	| how about 425s?
+	jeq	Lisa425
+	cmpb	#MMUID_425_E,%d0	| or maybe a 425e?
+	jeq	Lisa425
+	cmpb	#MMUID_433_T,%d0	| or a 433t?
+	jeq	Lisa433
+	cmpb	#MMUID_433_S,%d0	| or a 433s?
+	jeq	Lisa433
+	cmpb	#MMUID_385,%d0		| or a 385?
+	jeq	Lisa385
+	cmpb	#MMUID_382,%d0		| or a 382?
+	jeq	Lisa382
+	movl	#HP_380,%a0@		| guess we're a 380
+	jra	Lstart1
+Lisa425:
+	movl	#HP_425,%a0@
+	jra	Lstart1
+Lisa433:
+	movl	#HP_433,%a0@
+	jra	Lstart1
+Lisa385:
+	movl	#HP_385,%a0@
+	jra	Lstart1
+Lisa382:
+	movl	#HP_382,%a0@
+	jra	Lstart1
+
+	/*
+	 * End of 68040 section
+	 */
+
+	/*
+	 * 68020 models
+	 */
+
+Lis68020:
+	RELOC(fputype, %a0)		| all of the 68020 systems
+	movl	#FPU_68881,%a0@		|   have a 68881 FPU
+	movl	#1,%a1@(MMUCMD)		| a 68020, write HP MMU location
+	movl	%a1@(MMUCMD),%d0	| read it back
+	btst	#0,%d0			| non-zero?
+	jne	Lishpmmu		| yes, we have HP MMU
+	RELOC(mmutype, %a0)
+	movl	#MMU_68851,%a0@		| no, we have PMMU
+	RELOC(machineid, %a0)
+	movl	#HP_330,%a0@		| and 330 CPU
+	jra	Lstart1
+Lishpmmu:
+	RELOC(ectype, %a0)		| 320 or 350
+	movl	#EC_VIRT,%a0@		| both have a virtual address cache
+	movl	#0x80,%a1@(MMUCMD)	| set magic cookie
+	movl	%a1@(MMUCMD),%d0	| read it back
+	btst	#7,%d0			| cookie still on?
+	jeq	Lis320			| no, just a 320
+	RELOC(machineid, %a0)
+	movl	#HP_350,%a0@		| yes, a 350
+	jra	Lstart1
+Lis320:
+	RELOC(machineid, %a0)
+	movl	#HP_320,%a0@
+
+	/*
+	 * End of 68020 section
+	 */
+
+Lstart1:
+	movl	#0,%a1@(MMUCMD)		| clear out MMU again
+/* save the first PA as bootinfo_pa to map it to a virtual address later. */
+	movl	%a5,%d0			| lowram value from ROM via boot
+	RELOC(bootinfo_pa, %a0)
+	movl	%d0,%a0@		| save the lowram as bootinfo PA
+/* initialize memory sizes (for pmap_bootstrap) */
+	movl	#MAXADDR,%d1		| last page
+	moveq	#PGSHIFT,%d2
+	lsrl	%d2,%d1			| convert to page (click) number
+	RELOC(maxmem, %a0)
+	movl	%d1,%a0@		| save as maxmem
+	lsrl	%d2,%d0			| convert the lowram to page number
+	subl	%d0,%d1			| compute amount of RAM present
+	RELOC(physmem, %a0)
+	movl	%d1,%a0@		| and physmem
+
+/* configure kernel and lwp0 VA space so we can get going */
+#if NKSYMS || defined(DDB) || defined(MODULAR)
+	RELOC(esym,%a0)			| end of static kernel test/data/syms
+	movl	%a0@,%a4
+	tstl	%a4
+	jne	Lstart3
+#endif
+	movl	#_C_LABEL(end),%a4	| end of static kernel text/data
+Lstart3:
+	addl	%a5,%a4			| convert to PA
+	pea	%a5@			| reloff
+	pea	%a4@			| nextpa
+	RELOC(pmap_bootstrap1,%a0)
+	jbsr	%a0@			| pmap_bootstrap1(firstpa, nextpa)
+	addql	#8,%sp
+
+	/*
+	 * Updated nextpa returned in %d0.  We need to squirrel
+	 * that away in a callee-saved register to use later,
+	 * after the MMU is enabled.
+	 */
+	movl	%d0, %d7
+
+	/* NOTE: %d7 is now off-limits!! */
+
+	/*
+	 * CLKbase, MMUbase: important registers in internal IO space
+	 * accessed from assembly language.
+	 */
+	ASRELOC(intiobase,%a0)
+	movl	%a0@,%d0
+	movl	%d0,%d1
+	addl	#CLKBASE,%d1
+	RELOC(CLKbase,%a0)
+	movl	%d1,%a0@
+	addl	#MMUBASE,%d0
+	RELOC(MMUbase,%a0)
+	movl	%d0,%a0@
+
+/*
+ * Prepare to enable MMU.
+ * Since the kernel is not mapped logical == physical we must insure
+ * that when the MMU is turned on, all prefetched addresses (including
+ * the PC) are valid.  In order guarantee that, we use the last physical
+ * page (which is conveniently mapped == VA) and load it up with enough
+ * code to defeat the prefetch, then we execute the jump back to here.
+ *
+ * Is this all really necessary, or am I paranoid??
+ */
+	lea	MAXADDR,%a2		| PA of last RAM page
+#if 0
+	ASRELOC(Lmmutramp_start, %a1)	| addr of high code
+	ASRELOC(Lmmutramp_end, %a3)	| end addr
+#else
+	/* don't want pc-relative addressing */
+	.word	0x43f9			| lea Lmmutramp_start, %a1
+	.long	Lmmutramp_start
+	addl	%a5, %a1
+	.word	0x47f9			| lea Lmmutramp_end, %a3
+	.long	Lmmutramp_end
+	addl	%a5, %a3
+#endif
+1:
+	movw	%a1@+,%a2@+		| copy a word
+	cmpl	%a3,%a1			| done yet?
+	jcs	1b			| no, keep going
+	jmp	MAXADDR			| go for it!
+
+	/*
+	 * BEGIN MMU TRAMPOLINE.  This section of code is not
+	 * executed in-place.  It's copied to the last page
+	 * of RAM (mapped va == pa) and executed there.
+	 */
+Lmmutramp_start:
+	RELOC(mmutype, %a0)
+	tstl	%a0@			| HP MMU?
+	jne	1f			| no, skip
+	RELOC(Sysseg_pa, %a0)		| system segment table addr
+	movl	%a0@,%d1		| read value (a PA)
+	moveq	#PGSHIFT,%d2
+	lsrl	%d2,%d1			      | convert to page frame
+	movl	%d1,INTIOBASE+MMUBASE+MMUSSTP | load in sysseg table register
+
+	movl	#CACHE_ON,%d0
+	movl	#0,INTIOBASE+MMUBASE+MMUCMD        | clear external cache
+	movl	#MMU_ENAB,INTIOBASE+MMUBASE+MMUCMD | turn on MMU
+	movc	%d0,%cacr		| clear and enable caches
+	jmp	Lmmuenabled:l		| forced not be pc-relative
+1:
+	cmpl	#MMU_68040,%a0@		| 68040?
+	jne	1f			| no, skip
+	/* 68040 case: un-gate FPU and caches */
+	movw	#0,INTIOBASE+MMUBASE+MMUCMD+2
+	movw	#MMU_IEN+MMU_CEN+MMU_FPE,INTIOBASE+MMUBASE+MMUCMD+2
+	bra	2f
+1:
+	/* 68020/68030: un-gate 68881 and i-cache */
+	movl	#MMU_IEN+MMU_FPE,INTIOBASE+MMUBASE+MMUCMD
+2:
+#include <m68k/m68k/mmu_enable.s> 
+	/*
+	 * END MMU TRAMPOLINE.  Address register %a5 is now free.
+	 */
+Lmmutramp_end:
+
+/*
+ * Should be running mapped from this point on
+ */
+Lmmuenabled:
+	lea	_ASM_LABEL(tmpstk),%sp	| re-load the temporary stack
+	jbsr	_C_LABEL(vec_init)	| initialize the vector table
+
+	/* phase 2 of pmap setup, returns lwp0 SP in %a0 */
+	jbsr	_C_LABEL(pmap_bootstrap2)
+	movl	%a0,%sp			| now running on lwp0's stack
+	movl	#0,%a6			| terminate the stack back trace
+
+	movl	%d7,%sp@-		| push nextpa saved above
+	jbsr	_C_LABEL(machine_init)	| additional pre-main initialization
+	addql	#4,%sp
+	jra	_C_LABEL(main)		| main() (never returns)
+
+/*
+ * Other exceptions only cause four and six word stack frame and require
+ * no post-trap stack adjustment.
+ */
+
+/*
+ * Interrupt handlers.
+ * All device interrupts are auto-vectored.  The CPU provides
+ * the vector 0x18+level.  Note we count spurious interrupts, but
+ * we don't do anything else with them.
+ */
+
+/* 64-bit evcnt counter increments */
+#define EVCNT_COUNTER(ipl)					\
+	_C_LABEL(m68k_intr_evcnt) + (ipl)*SIZEOF_EVCNT + EV_COUNT
+#define EVCNT_INCREMENT(ipl)					\
+	clrl	%d0;						\
+	addql	#1,EVCNT_COUNTER(ipl)+4;			\
+	movel	EVCNT_COUNTER(ipl),%d1;				\
+	addxl	%d0,%d1;					\
+	movel	%d1,EVCNT_COUNTER(ipl)
+
+ENTRY_NOPROFILE(lev6intr)	/* level 6: clock */
+	addql	#1,_C_LABEL(intr_depth)	| entering interrupt
+	INTERRUPT_SAVEREG
+	CLKADDR(%a0)
+	movb	%a0@(CLKSR),%d0		| read clock status
+Lclkagain:
+	btst	#0,%d0			| clear timer1 int immediately to
+	jeq	Lnotim1			|  minimize chance of losing another
+	movpw	%a0@(CLKMSB1),%d1	|  due to statintr processing delay
+	movl	_C_LABEL(clkint),%d1	| clkcounter += clkint
+	addl	%d1,_C_LABEL(clkcounter)
+Lnotim1:
+	btst	#2,%d0			| timer3 interrupt?
+	jeq	Lnotim3			| no, skip statclock
+	movpw	%a0@(CLKMSB3),%d1	| clear timer3 interrupt
+	lea	%sp@(0),%a1		| a1 = &clockframe
+	movl	%d0,%sp@-		| save status
+	movl	%a1,%sp@-
+	jbsr	_C_LABEL(statintr)	| statintr(&frame)
+	addql	#4,%sp
+	movl	%sp@+,%d0		| restore pre-statintr status
+	CLKADDR(%a0)
+Lnotim3:
+	btst	#0,%d0			| timer1 interrupt?
+	jeq	Lrecheck		| no, skip hardclock
+	EVCNT_INCREMENT(6)
+	lea	%sp@(0),%a1		| a1 = &clockframe
+	movl	%a1,%sp@-
+#ifdef USELEDS
+	tstl	_C_LABEL(ledaddr)	| using LEDs?
+	jeq	Lnoleds0		| no, skip this code
+	movl	_ASM_LABEL(heartbeat),%d0 | get tick count
+	addql	#1,%d0			|  increment
+	movl	_C_LABEL(hz),%d1
+	addl	#50,%d1			| get the timing a little closer
+	tstb	_ASM_LABEL(beatstatus)	| time to slow down?
+	jeq	Lslowthrob		| yes, slow down
+	lsrl	#3,%d1			| no, fast throb
+Lslowthrob:
+	lsrl	#1,%d1			| slow throb
+	cmpl	%d0,%d1			| are we there yet?
+	jne	Lnoleds1		| no, nothing to do
+	addqb	#1,_ASM_LABEL(beatstatus) | incr beat status
+	cmpb	#3,_ASM_LABEL(beatstatus) | time to reset?
+	jle	Ltwinkle		  | no, twinkle the lights
+	movb	#0,_ASM_LABEL(beatstatus) | reset the status indicator
+Ltwinkle:
+	movl	#LED_PULSE,%sp@-
+	movl	#LED_DISK+LED_LANRCV+LED_LANXMT,%sp@-
+	clrl	%sp@-
+	jbsr	_C_LABEL(ledcontrol)	| toggle pulse, turn all others off
+	lea	%sp@(12),%sp
+	movql	#0,%d0
+Lnoleds1:
+	movl	%d0,_ASM_LABEL(heartbeat)
+Lnoleds0:
+#endif /* USELEDS */
+	jbsr	_C_LABEL(hardclock)	| hardclock(&frame)
+	addql	#4,%sp
+Lrecheck:
+	CPUINFO_INCREMENT(CI_NINTR)	| chalk up another interrupt
+	CLKADDR(%a0)
+	movb	%a0@(CLKSR),%d0		| see if anything happened
+	jmi	Lclkagain		|  while we were in hardclock/statintr
+#if NAUDIO >0
+	jbsr	_C_LABEL(m68k_intr_autovec) | call dispatch routine
+					    |  in case the audio device
+					    |  generated the interrupt
+#endif
+	INTERRUPT_RESTOREREG
+	subql	#1,_C_LABEL(intr_depth)	| exiting from interrupt
+	jra	_ASM_LABEL(rei)		| all done
+
+ENTRY_NOPROFILE(lev7intr)	/* level 7: parity errors, reset key */
+	clrl	%sp@-
+	moveml	#0xFFFF,%sp@-		| save registers
+	EVCNT_INCREMENT(7)
+	movl	%usp,%a0		| and save
+	movl	%a0,%sp@(FR_SP)		|   the user stack pointer
+	jbsr	_C_LABEL(nmihand)	| call handler
+	movl	%sp@(FR_SP),%a0		| restore
+	movl	%a0,%usp		|   user SP
+	moveml	%sp@+,#0x7FFF		| and remaining registers
+	addql	#8,%sp			| pop SP and stack adjust
+	jra	_ASM_LABEL(rei)		| all done
+
+ENTRY(ecacheon)
+	tstl	_C_LABEL(ectype)
+	jeq	1f
+	MMUADDR(%a0)
+	orl	#MMU_CEN,%a0@(MMUCMD)
+1:
+	rts
+
+ENTRY(ecacheoff)
+	tstl	_C_LABEL(ectype)
+	jeq	1f
+	MMUADDR(%a0)
+	andl	#~MMU_CEN,%a0@(MMUCMD)
+1:
+	rts
+
+/*
+ * Probe a memory address, and see if it causes a bus error.
+ * This function is only to be used in physical mode, and before our
+ * trap vectors are initialized.
+ * Invoke with address to probe in %a0.
+ * Alters: %a3 %d0
+ */
+#define BUSERR  0xfffffffc
+ASLOCAL(phys_badaddr)
+	ASRELOC(_bsave,%a3)
+	movl	BUSERR,%a3@		| save ROM bus error handler
+	ASRELOC(_ssave,%a3)
+	movl	%sp,%a3@		| and current stack pointer
+	ASRELOC(catchbad,%a3)
+	movl	%a3,BUSERR		| plug in our handler
+	movb	%a0@,%d0		| access address
+	ASRELOC(_bsave,%a3)		| no fault!
+	movl	%a3@,BUSERR
+	clrl	%d0			| return success
+	rts
+ASLOCAL(catchbad)
+	ASRELOC(_bsave,%a3)		| got a bus error, so restore handler
+	movl	%a3@,BUSERR
+	ASRELOC(_ssave,%a3)
+	movl	%a3@,%sp		| and stack
+	moveq	#1,%d0			| return fault
+	rts
+#undef	BUSERR
+
+	.data
+ASLOCAL(_bsave)
+	.long   0
+ASLOCAL(_ssave)
+	.long   0
+	.text
+
+/*
+ * Handle the nitty-gritty of rebooting the machine.
+ * Basically we just turn off the MMU and jump to the appropriate ROM routine.
+ * Note that we must be running in an address range that is mapped one-to-one
+ * logical to physical so that the PC is still valid immediately after the MMU
+ * is turned off.  We have conveniently mapped the last page of physical
+ * memory this way.
+ */
+ENTRY_NOPROFILE(doboot)
+#if defined(M68040)
+	cmpl	#MMU_68040,_C_LABEL(mmutype) | 68040?
+	jeq	Lnocache5		| yes, skip
+#endif
+	movl	#CACHE_OFF,%d0
+	movc	%d0,%cacr		| disable on-chip cache(s)
+	tstl	_C_LABEL(ectype)	| external cache?
+	jeq	Lnocache5		| no, skip
+	MMUADDR(%a0)
+	andl	#~MMU_CEN,%a0@(MMUCMD)	| disable external cache
+Lnocache5:
+	lea	MAXADDR,%a0		| last page of physical memory
+	movl	_C_LABEL(boothowto),%a0@+ | store howto
+	movl	_C_LABEL(bootdev),%a0@+	| and devtype
+	lea	Lbootcode,%a1		| start of boot code
+	lea	Lebootcode,%a3		| end of boot code
+Lbootcopy:
+	movw	%a1@+,%a0@+		| copy a word
+	cmpl	%a3,%a1			| done yet?
+	jcs	Lbootcopy		| no, keep going
+#if defined(M68040)
+	cmpl	#MMU_68040,_C_LABEL(mmutype) | 68040?
+	jne	LmotommuE		| no, skip
+	.word	0xf4f8			| cpusha bc
+LmotommuE:
+#endif
+	jmp	MAXADDR+8		| jump to last page
+
+Lbootcode:
+	lea	MAXADDR+0x800,%sp	| physical SP in case of NMI
+#if defined(M68040)
+	cmpl	#MMU_68040,_C_LABEL(mmutype) | 68040?
+	jne	LmotommuF		| no, skip
+	movl	#0,%d0
+	movc	%d0,%cacr		| caches off
+	.long	0x4e7b0003		| movc %d0,%tc
+	DOREBOOT
+LmotommuF:
+#endif
+#if defined(M68K_MMU_MOTOROLA)
+	tstl	_C_LABEL(mmutype)	| HP MMU?
+	jeq	LhpmmuB			| yes, skip
+	movl	#0,%a0@			| value for pmove to TC (turn off MMU)
+	pmove	%a0@,%tc		| disable MMU
+	DOREBOOT
+LhpmmuB:
+#endif
+#if defined(M68K_MMU_HP)
+	MMUADDR(%a0)
+	movl	#0xFFFF0000,%a0@(MMUCMD)	| totally disable MMU
+	DOREBOOT
+#endif
+Lebootcode:
+
+/*
+ * Misc. global variables.
+ */
+	.data
+GLOBAL(machineid)
+	.long	HP_320			| default to 320
+
+GLOBAL(mmuid)
+	.long	0			| default to nothing
+
+GLOBAL(mmutype)
+	.long	MMU_HP			| default to HP MMU
+
+GLOBAL(cputype)
+	.long	CPU_68020		| default to 68020 CPU
+
+GLOBAL(ectype)
+	.long	EC_NONE			| external cache type, default to none
+
+GLOBAL(internalhpib)
+	.long	1			| has internal HP-IB, default to yes
+
+GLOBAL(intiobase)
+	.long	0			| KVA of base of internal IO space
+
+GLOBAL(extiobase)
+	.long	0			| KVA of base of external IO space
+
+GLOBAL(CLKbase)
+	.long	0			| KVA of base of clock registers
+
+GLOBAL(MMUbase)
+	.long	0			| KVA of base of HP MMU registers
+
+#ifdef USELEDS
+ASLOCAL(heartbeat)
+	.long	0			| clock ticks since last heartbeat
+
+ASLOCAL(beatstatus)
+	.long	0			| for determining a fast or slow throb
+#endif
+
+#ifdef DEBUG
+ASGLOBAL(fulltflush)
+	.long	0
+
+ASGLOBAL(fullcflush)
+	.long	0
+#endif

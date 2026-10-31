@@ -1,0 +1,366 @@
+/*	$NetBSD: pmap_motorola.h,v 1.64 2026/07/06 14:33:55 thorpej Exp $	*/
+
+/*
+ * Copyright (c) 1991, 1993
+ *	The Regents of the University of California.  All rights reserved.
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)pmap.h	8.1 (Berkeley) 6/10/93
+ */
+
+/*
+ * Copyright (c) 1987 Carnegie-Mellon University
+ *
+ * This code is derived from software contributed to Berkeley by
+ * the Systems Programming Group of the University of Utah Computer
+ * Science Department.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions and the following disclaimer.
+ * 2. Redistributions in binary form must reproduce the above copyright
+ *    notice, this list of conditions and the following disclaimer in the
+ *    documentation and/or other materials provided with the distribution.
+ * 3. All advertising materials mentioning features or use of this software
+ *    must display the following acknowledgement:
+ *	This product includes software developed by the University of
+ *	California, Berkeley and its contributors.
+ * 4. Neither the name of the University nor the names of its contributors
+ *    may be used to endorse or promote products derived from this software
+ *    without specific prior written permission.
+ *
+ * THIS SOFTWARE IS PROVIDED BY THE REGENTS AND CONTRIBUTORS ``AS IS'' AND
+ * ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+ * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+ * ARE DISCLAIMED.  IN NO EVENT SHALL THE REGENTS OR CONTRIBUTORS BE LIABLE
+ * FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+ * LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+ * OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+ * SUCH DAMAGE.
+ *
+ *	@(#)pmap.h	8.1 (Berkeley) 6/10/93
+ */
+
+#ifndef	_M68K_PMAP_MOTOROLA_H_
+#define	_M68K_PMAP_MOTOROLA_H_
+
+#if defined(_KERNEL)
+
+#if !defined(_MODULE)
+
+#ifdef _KERNEL_OPT
+#include "opt_m68k_arch.h"
+#endif
+
+#include <sys/kcore.h>
+#include <m68k/kcore.h>
+
+#include <machine/cpu.h>
+#include <machine/pte.h>
+
+#define	NPTEPG		(PAGE_SIZE / (sizeof(pt_entry_t)))
+
+/*
+ * Pmap stuff
+ */
+struct pmap {
+	pt_entry_t		*pm_ptab;	/* KVA of page table */
+	st_entry_t		*pm_stab;	/* KVA of segment table */
+	u_int			pm_stfree;	/* 040: free lev2 blocks */
+	st_entry_t		*pm_stpa;	/* 040: ST phys addr */
+	uint16_t		pm_sref;	/* segment table ref count */
+	u_int			pm_count;	/* pmap reference count */
+	struct pmap_statistics	pm_stats;	/* pmap statistics */
+	int			pm_ptpages;	/* more stats: PT pages */
+};
+
+/*
+ * pmap-specific data stored in the vm_physmem[] array.
+ */
+struct pmap_physseg {
+	struct pv_header *pvheader;	/* pv table for this seg */
+};
+#define	__HAVE_PMAP_PHYSSEG
+
+/*
+ * Root Pointer attributes for Supervisor and User modes.
+ *
+ * Supervisor:
+ * - No index limit (Lower limit == 0)
+ * - Points to Short format descriptor table.
+ * - Shared Globally
+ *
+ * User:
+ * - No index limit (Lower limit == 0)
+ * - Points to Short format descriptor table.
+ */
+#define	MMU51_SRP_BITS	(DTE51_LOWER | DTE51_SG | DT51_SHORT)
+#define	MMU51_CRP_BITS	(DTE51_LOWER |            DT51_SHORT)
+
+/*
+ * MMU specific segment values
+ *
+ * We are using following segment layout in m68k pmap_motorola.c:
+ * 68020/030 4KB/page: l1,l2,page    == 10,10,12	(%tc = 0x82c0aa00)
+ * 68020/030 8KB/page: l1,l2,page    ==  8,11,13	(%tc = 0x82d08b00)
+ * 68040/060 4KB/page: l1,l2,l3,page == 7,7,6,12	(%tc = 0x8000)
+ * 68040/060 8KB/page: l1,l2,l3,page == 7,7,5,13	(%tc = 0xc000)
+ *
+ * 68020/030 l2 size is chosen per NPTEPG, a number of page table entries
+ * per page, to use one whole page for PTEs per one segment table entry,
+ * and maybe also because 68020 HP MMU machines use similar structures.
+ *
+ * 68040/060 layout is defined by hardware design and not configurable,
+ * as defined in <m68k/pte_motorola.h>.
+ *
+ * Even on 68040/060, we still appropriate 2-level ste-pte pmap structures
+ * for 68020/030 (derived from 4.4BSD/hp300) to handle 040's 3-level MMU.
+ * TIA_SIZE and TIB_SIZE are used to represent such pmap structures and
+ * they are also referred on 040/060.
+ *
+ * NBSEG and SEGOFSET are used to check l2 STE of the specified VA,
+ * so they have different values between 020/030 and 040/060.
+ */
+							/*  8KB /  4KB	*/
+#define TIB_SHIFT	(PAGE_SHIFT - 2)		/*   11 /   10	*/
+#define TIB_SIZE	(1U << TIB_SHIFT)		/* 2048 / 1024	*/
+#define TIA_SHIFT	(32 - TIB_SHIFT - PAGE_SHIFT)	/*    8 /   10	*/
+#define TIA_SIZE	(1U << TIA_SHIFT)		/*  256 / 1024	*/
+
+#define	MMU51_TCR_BITS	(TCR51_E | TCR51_SRE |				\
+			 __SHIFTIN(PAGE_SHIFT, TCR51_PS) |		\
+			 __SHIFTIN(TIA_SHIFT, TCR51_TIA) |		\
+			 __SHIFTIN(TIB_SHIFT, TCR51_TIB))
+#define	MMU40_TCR_BITS	(TCR40_E |					\
+			 __SHIFTIN(PAGE_SHIFT - 12, TCR40_P))
+
+#define SEGSHIFT	(TIB_SHIFT + PAGE_SHIFT)	/*   24 /   22	*/
+
+#define NBSEG30		(1U << SEGSHIFT)
+#define NBSEG40		(1U << SG4_SHIFT2)
+
+#if   ( defined(M68020) ||  defined(M68030)) &&	\
+      (!defined(M68040) && !defined(M68060))
+#define NBSEG		NBSEG30
+#elif ( defined(M68040) ||  defined(M68060)) &&	\
+      (!defined(M68020) && !defined(M68030))
+#define NBSEG		NBSEG40
+#else
+#define NBSEG		((mmutype == MMU_68040) ? NBSEG40 : NBSEG30)
+#endif
+
+#define SEGOFSET	(NBSEG - 1)	/* byte offset into segment */
+
+#define	m68k_round_seg(x)	((((vaddr_t)(x)) + SEGOFSET) & ~SEGOFSET)
+#define	m68k_trunc_seg(x)	((vaddr_t)(x) & ~SEGOFSET)
+#define	m68k_seg_offset(x)	((vaddr_t)(x) & SEGOFSET)
+
+/*
+ * On the 040, we keep track of which level 2 blocks are already in use
+ * with the pm_stfree mask.  Bits are arranged from LSB (block 0) to MSB
+ * (block 31).  For convenience, the level 1 table is considered to be
+ * block 0.
+ *
+ * MAX[KU]L2SIZE control how many pages of level 2 descriptors are allowed
+ * for the kernel and users.
+ * 16 or 8 implies only the initial "segment table" page is used,
+ * i.e. it means PAGE_SIZE / (SG4_LEV1SIZE * sizeof(st_entry_t)).
+ * WARNING: don't change MAXUL2SIZE unless you can allocate
+ * physically contiguous pages for the ST in pmap_motorola.c!
+ */
+#define MAXKL2SIZE	32
+#define MAXUL2SIZE	(8 * (PAGE_SIZE / 0x1000))
+#define l2tobm(n)	(1U << (n))
+#define bmtol2(n)	(ffs(n) - 1)
+
+/*
+ * For each struct vm_page, there is a list of all currently valid virtual
+ * mappings of that page.  An entry is a pv_entry, the list is pv_table.
+ */
+struct pv_entry {
+	struct pv_entry	*pv_next;	/* next pv_entry */
+	struct pmap	*pv_pmap;	/* pmap where mapping lies */
+	vaddr_t		pv_va;		/* virtual address for mapping */
+	st_entry_t	*pv_ptste;	/* non-zero if VA maps a PT page */
+	struct pmap	*pv_ptpmap;	/* if pv_ptste, pmap for PT page */
+};
+
+extern struct pv_header	*pv_table;	/* array of entries, one per page */
+
+#define	pmap_resident_count(pmap)	((pmap)->pm_stats.resident_count)
+#define	pmap_wired_count(pmap)		((pmap)->pm_stats.wired_count)
+
+static __inline bool
+pmap_remove_all(struct pmap *pmap)
+{
+	/* Nothing. */
+	return false;
+}
+
+/* This is at the end of the kernel virtual address space. */
+#ifndef SYSMAP_VA
+#define	SYSMAP_VA	((vaddr_t)(0-PAGE_SIZE*NPTEPG))
+#endif
+
+extern paddr_t		Sysseg_pa;
+extern st_entry_t	*Sysseg;
+extern pt_entry_t	*Sysmap, *Sysptmap;
+extern vsize_t		Sysptsize;
+extern vaddr_t		virtual_avail, virtual_end;
+#if defined(M68040) || defined(M68060)
+extern u_int		protostfree;
+#endif
+
+extern char		*vmmap;		/* map for mem, dumps, etc. */
+extern void		*CADDR1, *CADDR2;
+extern void		*msgbufaddr;
+
+/* for lwp0 uarea initialization after MMU enabled */
+extern vaddr_t		lwp0uarea;
+void *	pmap_bootstrap2(void);
+
+void	pmap_procwr(struct proc *, vaddr_t, size_t);
+#define	PMAP_NEED_PROCWR
+
+#ifdef M68K_EC_VAC
+void	pmap_init_vac(size_t);
+void	pmap_prefer(vaddr_t, vaddr_t *);
+#define	PMAP_PREFER(foff, vap, sz, td)	pmap_prefer((foff), (vap))
+#endif
+
+/*
+ * pmap hook for trap()'s page fault handler.  We don't need to
+ * do anything special, so it just goes to uvm_fault().
+ */
+#define	pmap_fault(m, v, t)	uvm_fault((m), (v), (t))
+
+void	_pmap_set_page_cacheable(struct pmap *, vaddr_t);
+void	_pmap_set_page_cacheinhibit(struct pmap *, vaddr_t);
+int	_pmap_page_is_cacheable(struct pmap *, vaddr_t);
+
+phys_ram_seg_t *pmap_init_kcore_hdr(cpu_kcore_hdr_t *);
+
+paddr_t	vtophys(vaddr_t va);
+
+/* Copy definitions from new pmap_68k.h to ease transition. */
+struct pmap_bootmap {
+	union {
+		vaddr_t		pmbm_vaddr;
+		vaddr_t *	pmbm_vaddr_ptr;
+	};
+	paddr_t			pmbm_paddr;
+	size_t			pmbm_size;
+	int			pmbm_flags;
+};
+
+#define	PMBM_F_VAONLY	__BIT(0)
+#define	PMBM_F_FIXEDVA	__BIT(1)
+#define	PMBM_F_KEEPOUT	__BIT(2)
+#define	PMBM_F_CI	__BIT(3)	/* cache-inhibited mapping */
+#define	PMBM_F_CWT	__BIT(4)	/* write-through cacheable mapping */
+#define	PMBM_F_RO	__BIT(5)	/* read-only mapping */
+
+extern struct pmap_bootmap machine_bootmap[];
+bool	pmap_pa_has_static_mapping(paddr_t, size_t, vm_prot_t,
+	    vaddr_t *, int *);
+bool	pmap_va_is_static_mapping(vaddr_t va, size_t);
+
+/* Kernel debugger support functions. */
+struct pmap_db_write_text_context {
+	vaddr_t			pgva;
+	volatile pt_entry_t *	ptep;
+	pt_entry_t		opte;
+};
+bool	pmap_db_write_text_enter(vaddr_t, struct pmap_db_write_text_context *);
+void	pmap_db_write_text_exit(struct pmap_db_write_text_context *);
+
+/*
+ * pmap_bootstrap1() may need to relocate global references, and perform
+ * VA <-> PA conversions.  These macros facilitate these conversions, and
+ * can be overridden in <machine/pmap.h> before including <m68k/pmap_68k.h>
+ * if needed.
+ *
+ * The first two macros are specifically for converting addresses within
+ * the confines of pmap_bootstrap1().  We may be running with the MMU off
+ * (and either VA==PA or VA!=PA) or with the MMU on with some mappings.
+ * The default ones are suitable for the "MMU off" case with the relocation
+ * offset passed in the "reloff" variable.
+ *
+ * - PMAP_BOOTSTRAP_RELOC_GLOB() -- relocate a global reference in order
+ *   to access it during bootstrap.
+ *
+ * - PMAP_BOOTSTRAP_RELOC_PA() -- relocate a physical address in order to
+ *   access it during bootstrap.
+ *
+ * The next two macros are intended to convert kernel virtual <-> physical
+ * addresses that will be used in the context of the running kernel once
+ * the MMU is enabled and running on the kernel's ultimate mappings:
+ *
+ * - PMAP_BOOTSTRAP_VA_TO_PA() -- convert a kernel virtual address to
+ *   a physical address using linear relocation.
+ *
+ * - PMAP_BOOTSTRAP_PA_TO_VA() -- and vice versa.
+ */
+#ifndef PMAP_BOOTSTRAP_RELOC_GLOB
+#define	PMAP_BOOTSTRAP_RELOC_GLOB(va)					\
+	((((vaddr_t)(va)) - VM_MIN_KERNEL_ADDRESS) + reloff)
+#endif
+
+#ifndef PMAP_BOOTSTRAP_RELOC_PA
+#define	PMAP_BOOTSTRAP_RELOC_PA(pa)					\
+	((vaddr_t)(pa))
+#endif
+
+#ifndef PMAP_BOOTSTRAP_VA_TO_PA
+#define	PMAP_BOOTSTRAP_VA_TO_PA(va)					\
+	((((vaddr_t)(va)) - VM_MIN_KERNEL_ADDRESS) + reloff)
+#endif
+
+#ifndef PMAP_BOOTSTRAP_PA_TO_VA
+#define	PMAP_BOOTSTRAP_PA_TO_VA(pa)					\
+	(VM_MIN_KERNEL_ADDRESS + (((paddr_t)(pa)) - reloff))
+#endif
+
+#endif /* ! _MODULE */
+
+/*
+ * Some pmap(9) API macros should be defined here for module(7).
+ * Luckily, all m68k pmap implementations behave this way. (see PR/54869)
+ */
+#define	pmap_update(pmap)		__nothing	/* nothing (yet) */
+
+#endif /* _KERNEL */
+
+#endif /* !_M68K_PMAP_MOTOROLA_H_ */

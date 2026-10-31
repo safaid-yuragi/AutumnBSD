@@ -1,0 +1,8 @@
+# $NetBSD: std.next68k,v 1.15 2026/08/16 00:15:00 thorpej Exp $
+
+# Standard information for next68k
+machine	next68k m68k
+include		"conf/std"			# MI standard options
+include		"arch/m68k/conf/std.m68k"	# m68k standard options
+
+options 	__HAVE_NEW_PMAP_68K

@@ -1,0 +1,13 @@
+# $NetBSD: md.evbmips,v 1.7 2024/07/11 20:41:06 riastradh Exp $
+#
+./usr/mdec/sbmips				base-sysutil-bin
+./usr/mdec/sbmips/boot				base-sysutil-bin
+./usr/mdec/sbmips/bootxx_cd9660			base-sysutil-bin
+./usr/mdec/sbmips/bootxx_ffs			base-sysutil-bin
+./usr/mdec/sbmips/bootxx_lfs			base-sysutil-bin
+./usr/mdec/sbmips/netboot			base-sysutil-bin
+./usr/sbin/ofctl				base-sysutil-bin
+./usr/share/sysinst/catalog/sysinstmsgs.de	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.es	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.fr	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.pl	base-util-share

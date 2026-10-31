@@ -1,0 +1,50 @@
+#	$NetBSD: Makefile.images,v 1.17 2026/10/08 17:50:26 mrg Exp $
+
+NOSSP=yes
+.include <bsd.own.mk>
+.include "${NETBSDSRCDIR}/distrib/common/Makefile.distrib"
+
+.include <bsd.kernobj.mk>
+
+WARNS=		1
+DBG=		-Os -fno-unwind-tables -m68020-60	# -m68020-60 seems to generate smaller binaries
+DBG+=		-fno-reorder-blocks
+DBG+=		-DNDEBUG	# to remove assert(3) macro
+DBG+=		-D_PTHREADS	# to remove putc
+DBG+=		-DNO_PROGRESS	# to remove ftp's progress
+
+LIBCDIR!=	cd ${NETBSDSRCDIR}/distrib/lib/libc_small && ${PRINTOBJDIR}
+LDFLAGS+=	-L${LIBCDIR}
+CRUNCHENV+=	LDFLAGS=${LDFLAGS:Q}
+
+CRUNCHBIN=	instbin
+LISTS=		${.CURDIR}/list ${.CURDIR}/../common/list.images
+MTREECONF=	${.CURDIR}/../common/mtree.conf
+IMAGEENDIAN=	be
+IMAGEDEPENDS+=	${CRUNCHBIN} \
+		${NETBSDSRCDIR}/etc/group ${NETBSDSRCDIR}/etc/master.passwd 
+
+IMAGE_RELEASEDIR=	installation/miniroot
+
+NOIEEE80211=1
+.if defined(USE_SYSINST)
+LISTS+=		${DISTRIBDIR}/common/list.sysinst.en
+.endif
+
+# Use stubs to eliminate some large stuff from libc
+HACKSRC=${DISTRIBDIR}/utils/libhack
+HACK_CURSES=yes
+.MAKEFLAGS+=    USE_WIDECHAR=no 
+.include "${HACKSRC}/Makefile.inc"
+${CRUNCHBIN}: libhack.o
+
+.include "${DISTRIBDIR}/common/Makefile.crunch"
+.if defined(MAKEDEVTARGETS)
+.include "${DISTRIBDIR}/common/Makefile.makedev"
+.endif
+.include "${DISTRIBDIR}/common/Makefile.image"
+
+release:: check_RELEASEDIR
+	${MAKESUMS} -t ${RELEASEDIR}/${RELEASEMACHINEDIR}/${IMAGE_RELEASEDIR} ${IMAGE}.gz
+
+.include <bsd.prog.mk>

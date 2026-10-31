@@ -1,0 +1,13 @@
+# $NetBSD: md.sun3,v 1.51 2024/07/11 20:41:06 riastradh Exp $
+#
+./usr/mdec/bootxx				base-sysutil-bin
+./usr/mdec/bootyy				base-sysutil-bin
+./usr/mdec/installboot				base-obsolete		obsolete
+./usr/mdec/netboot				base-sysutil-bin
+./usr/mdec/tapeboot				base-sysutil-bin
+./usr/mdec/ufsboot				base-sysutil-bin
+./usr/sbin/eeprom				base-sysutil-bin
+./usr/share/sysinst/catalog/sysinstmsgs.de	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.es	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.fr	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.pl	base-util-share

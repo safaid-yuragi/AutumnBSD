@@ -1,0 +1,6 @@
+# $NetBSD: msg_017.ln,v 1.2 2025/02/20 19:04:00 rillig Exp $
+#
+# Test data for message 17 of lint2:
+#	%s's return type in %s must be declared before use in %s
+#
+# TODO: add actual test data

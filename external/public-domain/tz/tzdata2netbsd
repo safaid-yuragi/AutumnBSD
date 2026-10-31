@@ -1,0 +1,1576 @@
+# $NetBSD: tzdata2netbsd,v 1.23 2026/10/02 03:06:26 kre Exp $
+
+# For use by NetBSD developers when updating to new versions of tzdata.
+#
+# 0. Be in an up-to-date checkout of src/external/public-domain/tz
+#    from NetBSD-current.
+# 1. Make sure that you have Paul Eggert's 4K RSA public key in your
+#    keyring (62AA7E34, eggert@cs.ucla.edu)  It is not required that it be trusted.
+# 2. Run this script.  You will be prompted for confirmation before
+#    anything major (such as a cvs operation).  The tz versions can be
+#    specified as args (new version first, and the previous second) if
+#    needed to override the calculated values
+# 3. If something fails, abort the script and fix it.
+# 4. Re-run this script until you are happy.  It's designed to
+#    be re-run over and over, and later runs will try not to
+#    redo non-trivial work done by earlier runs.
+#
+
+VERS_PATTERN='2[0-9][0-9][0-9][a-z]'
+# This needs to be updated twice every millennium to allow for the
+# new millenium's years.
+# First in the late xx90's sometime, allow the new one by changing the leading
+# digit from a specific value to the class containing the current and
+# following values (eg: in 2098 or so, change '2' to be '[23]').
+# Then in the following early xx00's sometime, delete the class, and
+# leave only the current value as valid (eg: in 3001 or 3002,
+# change '[23]' to be just '3'
+# Doing it this way helps guard against invalid specifications.
+# We could automate this, but it is (IMO) not worth the cost, to avoid a
+# twice a millenium edit requirement.
+# A more significant (and harder) change will be needed in the late 9990's
+# If this script lasts until then, send me a postcard, I'll be waiting for it!
+# Things get easier again after that until the late 99990's (etc.)
+
+# Note the pattern is used on both the old and new version specifiers,
+# so it must be able to cope with the shift from one form (eg 2999g)
+# to the new one (eg: 3000a) without failing (or the code that uses it
+# below needs to be updated).
+
+# Also note that the option of having a second alpha (1997aa or something)
+# to handle years with much activity is handled below, the pattern does not
+# need to match those.
+# If that convention changes (as of date of writing, it has never been
+# exercised) then code changes below will be required.
+# Note it doesn't matter (here) if nnnnz is followed by nnnnaa or nnnnza
+
+DIST_HOST=ftp.iana.org
+DIST_PATH=tz
+DIST_FILES=releases
+
+GTZURL=https://github.com/JodaOrg/global-tz/releases/download
+
+EDITOR=${EDITOR:-vi}
+
+TZBASE=$(pwd)	|| fail "Cannot find myself (${PWD})"
+cd -P "$TZBASE"	|| fail "Cannot return home: ${TZBASE}"
+
+if [ "${TZBASE}" != "${PWD}" ]
+then
+	fail "TZBASE!=PWD ?? TZBASE='${TZBASE}' PWD='${PWD}'"
+fi
+
+WORK_PFX=${TZBASE}/update-work
+UPDATE_FROM=${WORK_PFX}/updating.from.version
+
+usage()
+{
+	printf >&2 '%s\n' ''						\
+		"Usage: $0 [new-version-id [old-version-id]]" ''	\
+		"     where a version-id is of the form YYYYx (eg: 2018c)" \
+		"     or '' for new-version-id (to specify only the old)"  \
+		"     and where new-version-id can have =fetch-version-id" \
+		"     appended to specify fetching that version instead" \
+		"     where the 'fetch-version-id' can be omitted if it" \
+		"     is \${new-version-id}gtz  - and simply using '=' means" \
+		"     to work out the new-version-id but then use the gtz fork"
+
+	printf >&2 '\nUsually use:\n\t\tsh %s =\n' "${0##*/}"
+
+	exit 2
+}
+
+fail()
+{
+	local IFS=' '
+
+	printf >&2 '%s\n'	"Error detected:" "   $*" "Aborting."
+	exit 1
+}
+
+find_netbsdsrc()
+{
+	while ! [ -f UPDATING ] || ! [ -f BUILDING ]
+	do
+		if [ "${PWD}" = / ]
+		then
+			printf '%s\n' 'Unable to find NETBSDSRCDIR'
+			return 1
+		fi
+		cd -P ..
+	done
+	NETBSDSRCDIR=${PWD}
+	cd -P "${TZBASE:-/nowhere/that/exists}" ||
+		fail 'Unable to return to TZBASE:' "${TZBASE}"
+}
+
+valid_vers()
+{
+	case "$2" in
+	# The IANA (Eggert) standard version names
+	( ${VERS_PATTERN} | ${VERS_PATTERN}[a-z] )
+		;;
+	# The alternate (more rational) fork "global timezone" version
+	( ${VERS_PATTERN}gtz | ${VERS_PATTERN}[a-z]gtz )
+		;;
+	(*)	printf >&2 '%s: %s\n' \
+		    "Bad form for $1 version specifier '$2'" \
+		    "should (usually) be 'YYYYx'"
+		return 1
+		;;
+	esac
+	return 0
+}
+
+get_curvers()
+{
+	local LF=''
+	local LIST=iana-listing
+	local SED_SCRIPT='
+		/tzdata-latest.*-> /{
+			s/^.*-> //
+			s/\..*$//
+			s;^releases/tzdata;;p
+			q
+		}
+		d'
+
+	test -d "${WORK_PFX}" &&
+		test -s "${WORK_PFX}/${LIST}" &&
+		test "${WORK_PFX}/${LIST}" -nt dist/CVS &&
+		LF=$(find "${WORK_PFX}" -name "${LIST}" -mtime -1 -print) &&
+		test -n "${LF}" &&
+		NEWVER=$(sed -n < "${LF}" "${SED_SCRIPT}") &&
+		valid_vers new "${NEWVER}"				||
+
+	ftp >/dev/null 2>&1 -ia "${DIST_HOST}" <<- EOF &&
+					dir ${DIST_PATH} ${WORK_PFX}/${LIST}
+					quit
+					EOF
+		test -s "${WORK_PFX}/${LIST}" &&
+		NEWVER=$(sed -n < "${WORK_PFX}/${LIST}" "${SED_SCRIPT}") &&
+		valid_vers new "${NEWVER}"				||
+
+	{
+		rm -f "${WORK_PFX}/${LIST}"
+		fail "Cannot fetch current tzdata version from ${DIST_HOST}"
+	}
+
+	printf 'Updating from %s to %s\n' "${OLDVER}" "${NEWVER}"
+}
+
+argparse()
+{
+	local OVF OV NV OVy OVs NVy NVs
+
+	if OVF=$(find "${WORK_PFX}" -name "${UPDATE_FROM##*/}" -mtime +2 -print)
+	then
+		# delete anything old
+		test -n "${OVF}" && rm -f "${OVF}"
+	fi
+
+	case "$#" in
+	( 0 | 1 )
+		# once we have obtained OLDVER once, never guess it again.
+		if  [ -f "${UPDATE_FROM}" ]
+		then
+			OLDVER=$(cat "${UPDATE_FROM}")
+		elif [ -f dist/TZDATA_VERSION ]
+		then
+			OLDVER=$(cat dist/TZDATA_VERSION)
+		elif [ -f dist/version ]
+		then
+			OLDVER=$(cat dist/version)
+		fi
+		OLDVER=${OLDVER#tzdata}	# TZDATA_VERS is tzdata-nnnnX
+		OLDVER=${OLDVER#-}	# but the '-' is optional
+		OLDVERGTZ=${OLDVER}	# This would have been the cvs tag
+		OLDVER=${OLDVER%gtz}	# want the base version elsewhere
+
+		if [ -z "${OLDVER}" ]
+		then
+			printf >&2 '%s\n'  \
+			    'Cannot determine current installed version'  \
+			    'Specify it on the command line.'  \
+			    ''
+			usage
+		fi
+
+		valid_vers old "${OLDVER}" ||
+			fail "Calculated bad OLDVER, give as 2nd arg"
+		;;
+
+	( 2 )	valid_vers old "$2" && OLDVER="$2" || usage
+		;;
+
+	( * )	usage
+		;;
+	esac
+
+	GLOBAL=false
+	case "$#:$1" in
+	( 0: | 1: | 2: )
+		;;
+	( 1:= | 2:= )
+		GLOBAL=true;;
+	( 1:=?* | 2:=?* )
+		valid_vers fetch "${1#=}" && FETCHVER="${1#=}" || usage
+		;;
+	( 1:*=?* | 2:*=?* )
+		set -- "{$1%=*}" "${1#*=}"
+		valid_vers fetch "$2" && FETCHVER="$2" || usage
+		valid_vers new "$1" && NEWVER="$1" || usage
+		;;
+	( 1:?* | 2:?* )
+		valid_vers new "$1" && NEWVER="$1" || usage
+		;;
+	( * )	usage
+		;;
+	esac
+
+	test -z "${NEWVER}" && get_curvers
+
+	if [ -z "${FETCHVER}" ]
+	then
+		if "${GLOBAL}"
+		then
+			FETCHVER=${NEWVER}gtz
+		else
+			FETCHVER=${NEWVER}
+		fi
+	fi
+
+	case "${FETCHVER}" in
+	( *gtz )	GLOBAL=true;;
+	( * )		GLOBAL=false;;
+	esac
+
+	if [ "${NEWVER}" = "${OLDVER}" ]
+	then
+		printf 'New and old versions both %s; nothing to do\n' \
+		     "${NEWVER}"
+		docupdate
+		exit 0
+	fi
+
+	if ! "${GLOBAL}"
+	then
+		local reply
+
+		printf 'This will not use the GTZ variant of tzdata.\n'
+		read -r -p 'Is that intended? ' reply
+		case "${reply}" in
+		([Yy]*)	;;
+		(*)   printf 'Aborting after doing nothing\n'; exit 1;;
+		esac
+	fi
+
+	printf '%s\n' "${OLDVER}" > "${UPDATE_FROM}" ||
+	    fail "Unable to preserve old version ${OLDVER} in ${UPDATE_FROM}"
+
+	# Do version upgrade test using base version names, ignoring
+	# the "gtz" in the "global timezone" versions, so we can
+	# switch back and forth between use of those as circumstances change
+	OV=${OLDVER%gtz}
+	NV=${NEWVER%gtz}
+
+	OVy=${OV%%[!0-9]*}
+	OVs=${OV#${OVy}}
+	NVy=${NV%%[!0-9]*}
+	NVs=${NV#${NVy}}
+
+	# To get all the permutations correct, we need to separate
+	# the year and suffix parts of the version IDs (done just above)
+	# and then compare them separately.  The suffix is only relevant
+	# to the result when the years are the same.
+
+	# We compare the length of the suffix separately to the suffix
+	# itself, a multi-char suffix has never happened (and is never
+	# likely to) - but in the event that prediction is wrong, we don't
+	# know (yet) what is to come after 'z' - it might be 'za' 'zb'
+	# ... to 'zz" then 'zza' ... or it might be 'aa' 'ab' ... 'az' 'ba'...
+	# we need to handle both possibilities.  Two things stand out from
+	# those: 1. a longer suffix is always going to be for a newer version
+	# than a shorter one;  2. equal length suffixes can be compared as
+	# strings
+
+	if [ "${OVy}" -gt "${NVy}" ]			|| {
+		[ "${OVy}" -eq "${NVy}" ]	&& {
+			[ "${#OVs}" -gt "${#NVs}" ]		||
+			LC_COLLATE=C [ "${OVs}" '>' "${NVs}" ]
+		}
+        } then
+		local reply
+
+		printf '%s\n' "Update would revert ${OLDVER} to ${NEWVER}"
+		read -p "Is reversion intended? " reply
+		case "${reply}" in
+		([Yy]*)	;;
+		(*)	printf '%s\n' OK. Aborted.
+			rm -f "${UPDATE_FROM}"
+			exit 1
+			;;
+		esac
+	fi
+
+	return 0
+}
+
+setup_versions()
+{
+	# Uppercase variants of OLDVER and NEWVER
+	OLDVER_UC="$( printf '%s\n' "${OLDVERGTZ}" | tr 'a-z' 'A-Z' )"
+	NEWVER_UC="$( printf '%s\n' "${NEWVER}" | tr 'a-z' 'A-Z' )"
+
+	# Tags for use with version control systems
+	CVSOLDTAG="TZDATA${OLDVER_UC}"
+	CVSNEWTAG="TZDATA${NEWVER_UC}"
+	CVSBRANCHTAG="TZDATA"
+	GITHUBTAG="${NEWVER}"
+
+	if "${GLOBAL}" && [ "${CVSNEWTAG%GTZ}" = "${CVSNEWTAG}" ]
+	then
+		CVSNEWTAG=${CVSNEWTAG}GTZ
+	fi
+
+	# URLs for fetching distribution files, etc.
+	if "${GLOBAL}"
+	then
+		DISTURL=${GTZURL}/${FETCHVER}/tzdata${FETCHVER}.tar.gz
+		unset SIGURL
+	else
+		DISTURL="ftp://${DIST_HOST}/${DIST_PATH}/${DIST_FILES}"
+		DISTURL="${DISTURL}/tzdata${NEWVER}.tar.gz"
+		SIGURL="${DISTURL}.asc"
+	fi
+	NEWSURL="https://github.com/eggert/tz/raw/${GITHUBTAG}/NEWS"
+
+	# Directories
+	REPODIR="src/external/public-domain/tz/dist"
+				# relative to the NetBSD CVS repo
+	TZDISTDIR="$(pwd)/dist" # should be .../external/public-domain/tz/dist
+	WORKDIR="${WORK_PFX}/${NEWVER}"
+	EXTRACTDIR="${WORKDIR}/extract"
+
+	# Files in the work directory
+	DISTFILE="${WORKDIR}/${DISTURL##*/}"
+	SIGFILE="${DISTFILE}.asc"
+	PGPVERIFYLOG="${WORKDIR}/pgpverify.log"
+	NEWSFILE="${WORKDIR}/NEWS"
+	NEWSTRIMFILE="${WORKDIR}/NEWS.trimmed"
+	IMPORTMSGFILE="${WORKDIR}/import.msg"
+	IMPORTDONEFILE="${WORKDIR}/import.done"
+	MERGSMSGFILE="${WORKDIR}/merge.msg"
+	MERGEDONEFILE="${WORKDIR}/merge.done"
+	FILECONTENTCHECKDONE="${WORKDIR}/filecheck.done"
+	COMMITMERGEDONEFILE="${WORKDIR}/commitmerge.done"
+	TZDATAVERSFILE="${WORKDIR}/tzdata_version.done"
+
+	printf '%s\n' "${CVSOLDTAG}"  > "${WORK_PFX}/updating_from"
+}
+
+DOIT()
+{
+	local really_do_it=false
+	local reply
+
+	printf 'In directory %s\n' "$(pwd)"
+	printf 'ABOUT TO DO: %s\n' "$(shell_quote "$@")"
+	read -p "Really do it? [yes/no/quit] " reply
+	case "${reply}" in
+	([yY]*)	really_do_it=true ;;
+	([nN]*)	really_do_it=false ;;
+	([qQ]*)
+		printf 'Aborting\n'
+		return 1
+		;;
+	(*)	printf 'Huh?\n'
+		return 1
+		;;
+	esac
+	if "$really_do_it"; then
+		printf 'REALLY DOING IT NOW...\n'
+		"$@"
+	else
+		printf 'NOT DOING THE ABOVE COMMAND\n'
+		return 1
+	fi
+}
+
+# Quote args to make them safe in the shell.
+# Usage: quotedlist="$(shell_quote args...)"
+#
+# After building up a quoted list, use it by evaling it inside
+# double quotes, like this:
+#    eval "set -- $quotedlist"
+# or like this:
+#    eval "\$command $quotedlist \$filename"
+#
+shell_quote()
+(
+	local result=''
+	local arg qarg
+	LC_COLLATE=C ; export LC_COLLATE # so [a-zA-Z0-9] works in ASCII
+	for arg in "$@" ; do
+		case "${arg}" in
+		('')
+			qarg="''"
+			;;
+		(*[!-./a-zA-Z0-9]*)
+			# Convert each embedded ' to '\'',
+			# then insert ' at the beginning of the first line,
+			# and append ' at the end of the last line.
+			# Finally, elide unnecessary '' pairs at the
+			# beginning and end of the result and as part of
+			# '\'''\'' sequences that result from multiple
+			# adjacent quotes in the input.
+			qarg="$(printf '%s\n' "$arg" | \
+			    ${SED:-sed} -e "s/'/'\\\\''/g" \
+				-e "1s/^/'/" -e "\$s/\$/'/" \
+				-e "1s/^''//" -e "\$s/''\$//" \
+				-e "s/'''/'/g"
+				)"
+			;;
+		(*)
+			# Arg is not the empty string, and does not contain
+			# any unsafe characters.  Leave it unchanged for
+			# readability.
+			qarg="${arg}"
+			;;
+		esac
+		result="${result}${result:+ }${qarg}"
+	done
+	printf '%s\n' "$result"
+)
+
+validate_pwd()
+{
+	local P="$(pwd)" || return 1
+
+	test -d "${P}" &&
+	    test -d "${P}/dist" &&
+	    test -f "${P}/dist/zone.tab" &&
+	    test -f "${P}/tzdata2netbsd" || {
+		printf >&2 '%s\n' 'Please change to the correct directory' \
+		    'It is the one (in src) containing the tzdata2netbsd script, and dist subdir'
+		return 1
+	}
+}
+
+check_branch()
+{
+	local P="$(pwd)" || return 1
+
+	if ${Hg:-false}
+	then
+		if [ "$(hg branch)" = trunk ]
+		then
+			return 0
+		fi
+		printf >&2 '%s\n' \
+		    "This script should be run in a checkout of trunk only"
+		return 1
+
+	fi
+	test -f "${P}/CVS/Tag" && {
+
+		# Here (for local use only) if needed for private branch work
+		# insert tests for the value of $(cat "${P}/CVS/Tag") and
+		# allow your private branch tag to pass. Eg:
+
+		#	case "$(cat "${P}/CVS/Tag")" in
+		#	(my-branch-name)	return 0;;
+		#	esac
+
+		# Do not commit a version of this script modified that way,
+		# (not even on the private branch) - keep it as a local
+		# modified file.  (This script will not commit it.)
+
+		printf >&2 '%s\n' \
+		    "This script should be run in a checkout of HEAD only"
+		return 1
+	}
+
+	return 0
+}
+
+findcvsroot()
+{
+	Hg=false
+	if HGREPO=$(hg paths default 2>/dev/null)
+	then
+		test -n "${HGREPO}" && Hg=true && return 0
+	fi
+	[ -n "${CVSROOT}" ] && return 0
+	CVSROOT="$( cat ./CVS/Root 2>/dev/null )" || {
+		printf 'No CVS/Root or Hg repository in %s\n' "$(pwd)"
+		return 1
+	}
+	[ -n "${CVSROOT}" ] && return 0
+	printf >&2 'Failed to set CVSROOT value\n'
+	return 1
+}
+
+hginit()
+{
+	local P=
+
+	if ! "${Hg:-false}"
+	then
+		return 0
+	fi
+
+	P=$(cd -P "${NETBSDSRCDIR}/.." && pwd) ||
+		fail 'Unable to name parent of NETBSDSRCDIR'
+
+	TZDATASRC=${P}/tzdatasrc
+
+	if ! [ -d "${TZDATASRC}" ]
+	then
+		printf 2>&1 '%s\n' \
+		    'Make the tzdatasrc clone of src first.'		\
+		    'It should be a sibling of src in the filesys:'	\
+		    "	${TZDATASRC}"					\
+		    'It should contain just the TZDATA branch.'
+
+		exit 3
+	fi
+
+	if [ "$( ls "${TZDATASRC}" )" != external ]			  ||
+	   [ "$( ls "${TZDATASRC}/external" )" != public-domain ]	  ||
+	   [ "$( ls "${TZDATASRC}/external/public-domain" )" != tz ]	  ||
+	   [ "$( ls "${TZDATASRC}/external/public-domain/tz" )" != dist ] ||
+	 ! [ -d "${TZDATASRC}/external/public-domain/tz/dist" ]
+	then
+		printf 2>&1 '%s\n' \
+			"TZDATASRC (${TZDATASRC}) set up improperly"	\
+			'Correct it and restart.'			\
+			'It should contain only the TZDATA branch'
+		exit 4
+	fi
+
+	WORK_PFX=${P}/tzdata-update-work
+	UPDATE_FROM=${WORK_PFX}/updating.from.version
+}
+
+mkworkpfx()
+{
+	mkdir -p "${WORK_PFX}" || fail "Unable to make missing ${WORK_PFX}"
+}
+mkworkdir()
+{
+	mkdir -p "${WORKDIR}" || fail "Unable to make missing ${WORKDIR}"
+}
+
+cvsupdate()
+(
+	# Make sure our working directory is up to date (and HEAD)
+
+	if "${Hg:-false}"
+	then
+		if [ -n "$(hg status | sed 1q)" ]
+		then
+			printf 'There are modified files in the tree:\n'
+			hg status
+			printf 'Commit, revert, or shelve any modified files\n'
+			return 1
+		fi
+
+		if [ hg outgoing >/dev/null 2>&1 ]
+		then
+			printf 'There are unpushed changesets in the tree:\n'
+			hg outgoing | sed -e 1,2d
+			printf \
+			  'These changes will be pushed as part of the update\n'
+			read -r -p 'Is that OK? [Y/n] ' reply
+			case ${reply} in
+			[Yy]*)	;;
+			*)	printf 'Aborting.  Nothing has changed\n'
+				exit 1
+				;;
+			esac
+		fi
+		hg pull -u -b trunk "${HGREPO}"
+		return 0
+	fi
+
+	(
+		cd -P "${TZBASE}/dist"			|| exit 1
+		cvs -d "${CVSROOT}" -q update -AdP	|| exit 2
+	) || exit $?
+)
+
+fetch()
+{
+	[ -f "${DISTFILE}" ] || ftp -o "${DISTFILE}" "${DISTURL}" ||
+		fail "fetch of ${DISTFILE} failed"
+
+	if [ -n "${SIGURL}" ]
+	then
+		[ -f "${SIGFILE}" ] || ftp -o "${SIGFILE}" "${SIGURL}" ||
+			fail "fetch of ${SIGFILE} failed"
+	fi
+
+	[ -f "${NEWSFILE}" ] || ftp -o "${NEWSFILE}" "${NEWSURL}" ||
+		fail "fetch of ${NEWSFILE} failed"
+}
+
+checksig()
+{
+	{
+		gpg --verify "${SIGFILE}" "${DISTFILE}"
+		printf 'gpg exit status %s\n' "$?"
+	} 2>&1 |
+		tee "${PGPVERIFYLOG}"
+
+	# The output should contain lines that match all the following regexps
+	#
+	while read line
+	do
+		if ! grep -E -q -e "^${line}\$" "${PGPVERIFYLOG}"
+		then
+			printf >&2 'Failed to verify signature: %s\n' "${line}"
+			return 1
+		fi
+	done <<'EOF'
+gpg: Signature made .* using RSA key ID (62AA7E34|44AD418C)
+gpg: Good signature from "Paul Eggert <eggert@cs.ucla.edu>"
+gpg exit status 0
+EOF
+}
+
+extract()
+{
+	[ -f "${EXTRACTDIR}/zone.tab" ] && return
+	mkdir -p "${EXTRACTDIR}"
+	tar -z -xf "${DISTFILE}" -C "${EXTRACTDIR}"
+}
+
+rflist()
+(
+	 test "${1}" && cd -P "${1}" && find * -print | sort
+)
+
+zonelists()
+{
+	[ -f "${WORKDIR}"/addedzones ] && return
+
+	rm -fr "${WORK_PFX}"/oldzones "${WORK_PFX}"/newzones
+
+	(
+		cd -P "${TZBASE}/share/zoneinfo" || exit 1
+
+		make	TOOL_ZIC=/usr/sbin/zic			\
+			DESTDIR=				\
+			TZBUILDDIR="${WORK_PFX}"/oldzones	\
+			TZDIR="${WORK_PFX}"/oldzones		\
+			TZDISTDIR="${TZBASE}"/dist		\
+				posix_only >/dev/null 2>&1
+
+	) || fail 'Unable to compile old zone data files'
+
+	(
+		cd -P "${TZBASE}/share/zoneinfo" || exit 1
+
+		make	TOOL_ZIC=/usr/sbin/zic			\
+			DESTDIR=				\
+			TZBUILDDIR="${WORK_PFX}"/newzones	\
+			TZDIR="${WORK_PFX}"/newzones		\
+			TZDISTDIR="${EXTRACTDIR}"		\
+				posix_only >/dev/null 2>&1
+
+	) || fail 'Unable to compile new zone data files'
+
+	rflist "${WORK_PFX}"/oldzones > "${WORKDIR}"/oldzones
+	rflist "${WORK_PFX}"/newzones > "${WORKDIR}"/newzones
+
+	if cmp -s "${WORKDIR}"/oldzones "${WORKDIR}"/newzones >/dev/null
+	then
+		printf 'No zones added or deleted by this update\n'
+		> "${WORKDIR}"/removedzones
+		> "${WORKDIR}"/addedzones
+		return 0
+	fi
+
+	comm -23 "${WORKDIR}"/oldzones "${WORKDIR}"/newzones \
+		> "${WORKDIR}"/removedzones
+
+	test "${REMOVEOK:-no}" != yes && test -s "${WORKDIR}"/removedzones && {
+		printf '%s\n' 'This update wants to remove these zone files:' ''
+		sed 's/^/	/' < "${WORKDIR}"/removedzones
+		printf '%s\n' '' 'It probably should not' ''
+
+		printf 'If this is OK, rerun this script with REMOVEOK=yes\n'
+		printf 'Otherwise, fix the problem, and then rerun the script\n'
+		exit 1
+	}
+
+	comm -13 "${WORKDIR}"/oldzones "${WORKDIR}"/newzones \
+		> "${WORKDIR}"/addedzones
+
+	test -s "${WORKDIR}"/addedzones && {
+		printf '%s\n' '' '********************************* NOTE:' \
+			'********************************* New Zones Created' \
+			''
+		sed 's/^/	/' < "${WORKDIR}"/addedzones
+		printf '%s\n' '' '*********************************' ''
+	}
+
+	return 0
+}
+
+updatedzones()
+{
+	[ -f "${WORKDIR}"/.zonesOK ] && return
+
+	rm -fr "${WORK_PFX}"/updzones
+
+	(
+		cd -P "${TZBASE}/share/zoneinfo" || exit 1
+
+		make	TOOL_ZIC=/usr/sbin/zic			\
+			DESTDIR=				\
+			TZBUILDDIR="${WORK_PFX}"/updzones	\
+			TZDIR="${WORK_PFX}"/updzones		\
+			TZDISTDIR="${TZBASE}"/dist		\
+				posix_only >/dev/null 2>&1
+
+	) || fail 'Unable to compile updated zone data.   HELP'
+
+	rflist "${WORK_PFX}"/updzones > "${WORKDIR}"/updzones
+
+	cmp -s "${WORKDIR}"/newzones "${WORKDIR}"/updzones || {
+
+		printf '%s\n' '' '*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*#*' \
+			'After cvs work, zones created are not as intended' \
+			'-------------------------------------------------' \
+			'Zones not created but should have been:'
+		comm -23 "${WORKDIR}"/newzones "${WORKDIR}"/updzones |
+			sed 's/^/	/'
+		printf '%s\n' \
+			'-------------------------------------------------' \
+			'Zones created that should not have been:'
+		comm -13 "${WORKDIR}"/newzones "${WORKDIR}"/updzones |
+			sed 's/^/	/'
+		printf '%s\n' \
+			'-------------------------------------------------'
+
+		fail 'cvs import/merge/update/commit botch'
+	}
+
+	> "${WORKDIR}"/.zonesOK
+}
+
+addnews()
+{
+	[ -f "${EXTRACTDIR}/NEWS" ] && return
+	cp -p "${NEWSFILE}" "${EXTRACTDIR}"/NEWS
+}
+
+# Find the relevant part of the NEWS file for all releases between
+# OLDVER and NEWVER, and save them to NEWSTRIMFILE.
+#
+trimnews()
+{
+	[ -s "${NEWSTRIMFILE}" ] && return
+	awk -v oldver="${OLDVER}" -v newver="${NEWVER}" \
+	    '
+		BEGIN {inrange = 0}
+		/^Release [0-9]+[a-z]+ - .*/ {
+			# "Release <version> - <date>"
+			# Note: must handle transition from 2018z to 2018aa
+			# Assumptions: OLDVER and NEWVER have been sanitized,
+			# and format of NEWS file does not alter (and
+			# contains valid data)
+			inrange = ((length($2) > length(oldver) || \
+					$2 > oldver) && \
+				(length($2) < newver || $2 <= newver))
+		}
+		// { if (inrange) print; }
+	    ' \
+		<"${NEWSFILE}" >"${NEWSTRIMFILE}"
+
+	if "${GLOBAL}"
+	then
+		printf '%s\n' "tzdata-${NEWVER}gtz"
+	else
+		printf '%s\n' "tzdata-${NEWVER}"
+	fi > "${TZDISTDIR}/TZDATA_VERSION"
+}
+
+# Create IMPORTMSGFILE from NEWSTRIMFILE, by ignoring some sections,
+# keeping only the first sentence from paragraphs in other sections,
+# and changing the format.
+#
+# The result should be edited by hand before performing a cvs commit.
+# A message to that effect is inserted at the beginning of the file.
+#
+mkimportmsg()
+{
+	[ -s "${IMPORTMSGFILE}" ] && return
+	{ cat <<EOF
+EDIT ME: Edit this file and then delete the lines marked "EDIT ME".
+EDIT ME: This file will be used as a log message for the "cvs commit" that
+EDIT ME: imports tzdata${NEWVER}.  The initial contents of this file were
+EDIT ME: generated from ${NEWSFILE}.
+EDIT ME: 
+EOF
+	awk -v oldver="${OLDVER}" -v newver="${NEWVER}" \
+	    -v disturl="${DISTURL}" -v newsurl="${NEWSURL}" \
+	    '
+		BEGIN {
+			bullet = "  * ";
+			indent = "    ";
+			blankline = 0;
+			goodsection = 0;
+			havesentence = 0;
+			print "Import tzdata"newver" from "disturl;
+			#print "and NEWS file from "newsurl;
+		}
+		/^Release/ {
+			# "Release <version> - <date>"
+			ver = $2;
+			date = gensub(".* - ", "", 1, $0);
+			print "";
+			print "Summary of changes in tzdata"ver \
+				" ("date"):";
+		}
+		/^$/ { blankline = 1; havesentence = 0; }
+		/^  Changes / { goodsection = 0; }
+		/^  Changes to future timestamps/ { goodsection = 1; }
+		/^  Changes to past timestamps/ { goodsection = 1; }
+		/^  Changes to documentation/ || \
+		/^  Changes to commentary/ {
+			t = gensub("^ *", "", 1, $0);
+			t = gensub("\\.*$", ".", 1, t);
+			print bullet t;
+			goodsection = 0;
+		}
+		/^    .*/ && goodsection {
+			# In a paragraph in a "good" section.
+			# Ignore leading spaces, and ignore anything
+			# after the first sentence.
+			# First line of paragraph gets a bullet.
+			t = gensub("^ *", "", 1, $0);
+			t = gensub("\\. .*", ".", 1, t);
+			if (blankline) print bullet t;
+			else if (! havesentence) print indent t;
+			havesentence = (havesentence || (t ~ "\\.$"));
+		}
+		/./ { blankline = 0; }
+	    ' \
+		<"${NEWSTRIMFILE}"
+	} >"${IMPORTMSGFILE}"
+
+	if [ -s "${WORKDIR}"/addedzones ]
+	then
+		printf '%s\n' '' 'Zones added by this update:'
+		sed 's/^/	/' < "${WORKDIR}"/addedzones
+	fi >> "${IMPORTMSGFILE}"
+
+	if [ -s "${WORKDIR}"/removedzones ]
+	then
+		printf '%s\n' '' 'Zones removed by this update:'
+		sed 's/^/	/' < "${WORKDIR}"/removedzones
+	fi >> "${IMPORTMSGFILE}"
+
+}
+
+editimportmsg()
+{
+	if [ -s "${IMPORTMSGFILE}" ] && ! grep -q '^EDIT' "${IMPORTMSGFILE}"
+	then
+		return 0 # file has already been edited
+	fi
+	# Pass both IMPORTMSGFILE and NEWSFILE to the editor, so that the
+	# user can easily consult NEWSFILE while editing IMPORTMSGFILE.
+	${EDITOR} "${IMPORTMSGFILE}" "${NEWSFILE}"
+}
+
+cvsimport()
+{
+	if [ -e "${IMPORTDONEFILE}" ]; then
+		cat >&2 <<EOF
+The CVS import has already been performed.
+EOF
+		return 0
+	fi
+	if ! [ -s "${IMPORTMSGFILE}" ] || grep -q '^EDIT' "${IMPORTMSGFILE}"
+	then
+		cat >&2 <<EOF
+The message file ${IMPORTMSGFILE}
+has not been properly edited.
+Not performing cvs import.
+EOF
+		return 1
+	fi
+	( cd -P "${EXTRACTDIR}" &&
+	  DOIT cvs -d "${CVSROOT}" import -I ! -m "$(cat "${IMPORTMSGFILE}")" \
+		"${REPODIR}" "${CVSBRANCHTAG}" "${CVSNEWTAG}"
+	) && touch "${IMPORTDONEFILE}"
+}
+
+hgimport()
+(
+	set -e		# Just to make sure
+
+	if [ -e "${IMPORTDONEFILE}" ]; then
+		cat >&2 <<EOF
+The hg TZDATA branch update has already been performed.
+EOF
+		return 0
+	fi
+	if ! [ -s "${IMPORTMSGFILE}" ] || grep -q '^EDIT' "${IMPORTMSGFILE}"
+	then
+		cat >&2 <<EOF
+The message file ${IMPORTMSGFILE}
+has not been properly edited.
+Not performing hg import.
+EOF
+		return 1
+	fi
+
+	RELPATH=${TZBASE#${NETBSDSRCDIR}/}
+
+	cd -P "${TZDATASRC}/${RELPATH}/dist"
+
+	ls -1 > "${WORKDIR}"/old-dist-files
+	ls -1 "${EXTRACTDIR}" >"${WORKDIR}"/new-dist-files
+
+	rm -f *
+	cp -f ${EXTRACTDIR}/* .
+
+	if cmp "${WORKDIR}"/old-dist-files "${WORKDIR}"/new-dist-files
+	then
+		DOIT hg commit -l "${IMPORTMSGFILE}" &&
+			touch "${IMPORTDONEFILE}"    &&
+			hg tag -m "TZDATA branch ${NEWVER_UC} import tag" \
+			    "TZDATA/${CVSNEWTAG#TZDATA}"
+		return
+	fi
+
+	NEW=$(comm -13 "${WORKDIR}"/old-dist-files "${WORKDIR}"/new-dist-files)
+	OLD=$(comm -23 "${WORKDIR}"/old-dist-files "${WORKDIR}"/new-dist-files)
+
+	if [ -n "${NEW}" ]
+	then
+		printf '\nThe following files have been added:\n%s\n' "${NEW}"\
+			>>"${IMPORTMSGFILE}"
+	fi
+	if [ -n "${OLD}" ]
+	then
+		printf '\nThe following files have been removed:\n%s\n' \
+			"${OLD}" >>"${IMPORTMSGFILE}"
+
+		test -n "${NEW}" &&
+		printf '\nThe following files have been added:\n%s\n' "${NEW}"
+		printf '\nThe following files have been removed:\n%s\n' \
+			"${OLD}"
+
+		read -r -p 'Do you want to do this ? ' reply
+		case $reply in
+		[Yy]*)	;;
+		*)	return 1;;
+		esac
+	fi
+
+	DOIT hg addremove -s 90 &&
+	DOIT hg commit -l "${IMPORTMSGFILE}" &&
+		touch "${IMPORTDONEFILE}"    &&
+		hg tag -m "TZDATA branch ${NEWVER_UC} import tag" \
+			"TZDATA/${CVSNEWTAG#TZDATA}"
+)
+
+cvsmerge()
+{
+	cd -P "${TZDISTDIR}" || exit 1
+	if [ -e "${MERGEDONEFILE}" ]
+	then
+		cat >&2 <<EOF
+The CVS merge has already been performed.
+EOF
+		return 0
+	fi
+	DOIT cvs -d "${CVSROOT}" update -j"${CVSOLDTAG}" -j"${CVSNEWTAG}" &&
+		touch "${MERGEDONEFILE}"
+	printf '%s\n' ================================== \
+		'The following differences exist between the merge results' \
+		'and the imported files:' '================================='
+	diff -ur "${EXTRACTDIR}" . || :
+	printf '%s\n' ==================================
+}
+
+hgmerge()
+{
+	cd -P "${TZDISTDIR}" || exit 1
+	if [ -e "${MERGEDONEFILE}" ]
+	then
+		cat >&2 <<EOF
+The hg merge has already been performed.
+EOF
+		return 0
+	fi
+
+	if ! [ -e "${TZDATAVERSFILE}" ]
+	then
+		DOIT hg commit -m "Update TZDATA_VERSION to ${NEWVER}" \
+		    "${TZDISTDIR}/TZDATA_VERSION" ||
+			exit 1
+		touch "${TZDATAVERSFILE}"
+	fi
+
+	DOIT hg merge TZDATA && {
+		touch "${MERGEDONEFILE}"
+		return 0	# no conflicts found
+	}
+
+	if [ -e "${TZDISTDIR}/.hgtags.orig" ]
+	then
+		rm -f "${TZDISTDIR}/.hgtags.orig"
+		hg resolve -m "${TZDISTDIR}/.hgtags"
+	fi
+
+	if [ -z "$(hg resolve -l | sed  -e '/^R /d')" ]
+	then
+		touch "${MERGEDONEFILE}"
+		return 0	# no real conflicts found
+	fi
+
+	printf '\n*********************************** CONFLICTS\n'
+	printf 'The following files have conflicts:\n'
+
+	hg resolve -l
+
+	printf '%s\n' \
+	    $'Resolve these issues, and run\n\thg resolve -m file...'	\
+	    'as each file listed above is corrected.' ''		\
+	    $'Use\n\thg resolve -l\nto see an updated list of work' ''	\
+    'Then after all files are 'R' status (resolved) run this script again' \
+	    '       (use the same args).'
+
+	touch "${MERGEDONEFILE}"	# Cannot do another merge, commit next
+	exit 1
+}
+
+resolveconflicts()
+{
+	cd -P "${TZDISTDIR}" || exit 1
+	if grep -l '^[<=>][<=>][<=>]' *
+	then
+		cat <<EOF
+There appear to be conflicts in the files listed above.
+Resolve conflicts, then re-run this script.
+EOF
+		return 1
+	fi
+}
+
+checkfilecontents()
+(
+	if [ -e "${FILECONTENTCHECKDONE}" ]
+	then
+		printf 'Repository file contents checked already\n'
+		exit 0
+	fi
+
+	set +e +f
+
+	auto=false
+
+	cd -P "${EXTRACTDIR}" || exit 1
+	set -- *
+
+	if test "$1" = '*'
+	then
+		if [ "$#" -eq 1 ] && ! [ -e "$1" ]
+		then
+			printf 'No files in "%s" !!\nAborting.\n' \
+			    "${EXTRACTDIR}"
+			exit 1
+		fi
+		printf	\
+		    'A file named "*" exists in "%s" !!\nDanger!!\nAborting.\n'\
+		    "${EXTRACTDIR}"
+		exit 1
+	fi
+
+	unset -v LESS MORE
+
+	exit=0
+	cd -P "${TZDISTDIR}" || exit 1
+
+	for file
+	do
+		case "${file}" in
+		*.orig | *.rej) rm -f "${file}"; continue;;	# Patch noise
+		esac
+		if ! test -e "${file}"
+		then
+			printf 'In distribution but not in new tree: %s\n' \
+			    "${file}"
+			cp "${EXTRACTDIR}${file}" .
+			DOIT cvs -d "${CVSROOT}" add \
+			    -m "Added by ${NEWVER}" "${file}"
+			continue
+		fi
+
+		printf 'Checking for differences in %s\n' "${file}"
+		cmp -s "${EXTRACTDIR}/${file}" "${file}" && continue
+
+		if "${auto}"
+		then
+			cp -p "${EXTRACTDIR}/${file}" "${file}"
+			continue
+		fi
+
+		printf 'Differences in "%s" (- existing + updated)\n\n' \
+		    "${file}"
+		diff -u "${file}" "${EXTRACTDIR}/${file}" | more
+		read -rp "Update ${file} to new version? (y/n/all)" reply
+		case "${reply}" in
+		([Nn]*) continue;;
+		([Yy]*|[Aa]|[Aa]ll) ;;
+		([Qq]*)	exit 1;;
+		(*)	printf 'Unexpected reply, abort.\n'
+			exit 1;;
+		esac
+
+		cp -p "${EXTRACTDIR}/${file}" "${file}"
+
+		case "${reply}" in
+		([Aa]*)	auto=true;;
+		esac
+	done
+
+	set -- *
+	LIST=
+	for file	# nb: continue if there are no files, $1='*'
+	do
+		if test "${file}" = TZDATA_VERSION	||
+		   test "${file}" = CVS			||
+		   test -e "${EXTRACTDIR}/${file}"
+		then
+			continue
+		fi
+		printf 'File "%s" no longer exists in %s\n' \
+			"${file}" "${NEWVER}"
+		LIST="${LIST} '${file}'"
+	done
+
+	eval set -- ${LIST}
+	while :
+	do
+		case $# in
+		(0)	break;;
+		(1)	M='this file';;
+		(*)	M='these files';;
+		esac
+
+		read -rp "OK to remove $M from the repository? " reply
+		case "${reply}" in
+		([Yy]*)	;;
+		([Nn]*)	break;;
+		(*)	exit 1;;
+		esac
+
+		rm -f "$@"
+		DOIT cvs -d "${CVSROOT}" remove "${@}" || continue
+		break
+	done
+
+	touch "${FILECONTENTCHECKDONE}" || exit 1
+
+	exit "${exit}"
+)
+
+cvscommitmerge()
+{
+	cd -P "${TZDISTDIR}" || exit 1
+	if grep -l '^[<=>][<=>][<=>]' *
+	then
+		cat >&2 <<EOF
+There still appear to be conflicts in the files listed above.
+Not performing cvs commit.
+EOF
+		return 1
+	fi
+	if [ -e "${COMMITMERGEDONEFILE}" ]; then
+		cat >&2 <<EOF
+The CVS commit (of the merge result) has already been performed.
+EOF
+		return 0
+	fi
+	DOIT cvs -d "${CVSROOT}" commit -m "Merge tzdata${NEWVER}" &&
+		touch "${COMMITMERGEDONEFILE}"
+}
+
+hgcommitmerge()
+{
+	cd -P "${TZDISTDIR}" || exit 1
+
+	if ! hg resolve -l
+	then
+		cat >&2 <<EOF
+
+There still appear to be conflicts in the files listed above.
+
+Not performing hg commit.
+
+Resolve conflicts first.  Use:
+	hg resolve -l
+to discover what remains to be done (marked 'U') and then:
+	hg resolve -m file...
+as each conflict has been fixed, until no unresolved conflicts remain.
+EOF
+		exit 1
+	fi
+	if [ -e "${COMMITMERGEDONEFILE}" ]; then
+		cat >&2 <<EOF
+The hg commit (of the merge result) has already been performed.
+EOF
+		return 0
+	fi
+	DOIT hg commit -m "Merge tzdata${NEWVER}" &&
+		touch "${COMMITMERGEDONEFILE}" &&
+		hg tag -m "${CVSNEWTAG} merge tag" "${CVSNEWTAG}"
+}
+
+setlistupdate()
+{
+	if [ -s "${WORKDIR}"/addedzones ] ||
+	   [ -s "${WORKDIR}"/removedzones ]
+	then	(
+			# Do all the preparatory work first, so
+			# when we get to manipulating the sets list file
+			# it all happens quickly...
+
+			while read file
+			do
+				printf '\\!zoneinfo/%s!{ %s ; %s ; }\n'     \
+					"${file}"			    \
+					's/sys-share	/obsolete	/'  \
+					's/	share$/	obsolete/'
+			done < "${WORKDIR}"/removedzones > "${WORKDIR}/sedcmds"
+
+			while read file
+			do
+				P=./usr/share/zoneinfo/"${file}"
+				T2='		'
+				case "$(( 48 - ${#P} ))" in
+				(-*|0)	T2='	'	T='	'	 ;;
+				([12345678])		T='	'	 ;;
+				(9|1[0123456])		T='		';;
+				(1[789]|2[01234]) T='			';;
+				(2[5-9]|3[012])
+					T='				';;
+				# the following cases can't happen,
+				# but for completeness...
+				(3[3-9])
+				    T='					';;
+				(*)  T='				'
+				    T="${T}		"		;;
+				esac
+
+				if [ -d "${WORKDIR}/newzones/${file}" ]
+				then
+					printf '%s%sbase-sys-share\n' \
+						"${P}" "${T}"
+					continue
+				fi
+
+				printf '%s%sbase-sys-share%sshare\n' \
+					"${P}" "${T}" "${T2}"
+
+				# Deal with possibility that a new file
+				# might have previously existed, and then
+				# been deleted - marked obsolete
+				printf '\\!^%s	.*obsolete!d\n' "${P}" \
+					>> "${WORKDIR}/sedcmds"
+
+			done < "${WORKDIR}"/addedzones > "${WORKDIR}/setadded"
+
+			printf '$r %s\n' "${WORKDIR}/setadded" \
+				>> "${WORKDIR}/sedcmds"
+
+			if ! [ -s "${WORKDIR}/sedcmds" ]	# impossible?
+			then
+				exit 0
+			fi
+
+			MSG=$(
+				printf 'tzdata update to %s\n' "$NEWVER"
+				if [ -s "${WORKDIR}"/addedzones ]
+				then
+					printf '\nAdded zoneinfo files:\n'
+					sed 's/^/	/'	\
+						< "${WORKDIR}"/addedzones
+				fi
+				if [ -s "${WORKDIR}"/removedzones ]
+				then
+					printf  '\nRemoved zoneinfo files:\n'
+					sed 's/^/	/'	\
+						< "${WORKDIR}"/removedzones
+				fi
+				printf '\nX'
+			)
+			MSG=${MSG%X}
+
+			# Now is where the changes start happening...
+
+			cd -P "${NETBSDSRCDIR}/distrib/sets" || exit 1
+			cd -P lists/base || exit 2
+			"${Hg:-false}" ||
+			    cvs -d "${CVSROOT}" -q update -A mi || exit 3
+			cp -p mi mi.unsorted || exit 4
+			sh ../../sort-list mi || exit 5
+			cmp -s mi mi.unsorted || {
+				if "${Hg:-false}"
+				then
+					DOIT hg commit -m 'Sort (NFCI)' mi ||
+						exit 6
+				else
+					DOIT cvs -d "${CVSROOT}" -q commit \
+						-m 'Sort (NFCI)' mi || exit 6
+				fi
+			}
+			rm -f mi.unsorted
+			sed -f "${WORKDIR}/sedcmds" < mi > mi.new || exit 7
+			! test -s mi.new || cmp -s mi mi.new && {
+				printf 'Failed to make changes to set lists\n'
+				exit 8
+			}
+			mv mi.new mi || exit 9
+			sh ../../sort-list mi || exit 10
+			if "${Hg:-false}"
+			then
+				DOIT hg commit -m "${MSG}" mi || exit 11
+			else
+				DOIT cvs -d "${CVSROOT}" commit -m "${MSG}" mi||
+					exit 11
+			fi
+			printf 'Sets list successfully updated\n'
+			exit 0
+		) || {
+			printf '%s: %d\n%s %s\n' 'Sets list update failed' "$?"\
+				'Update the sets list' \
+				'(src/distrib/sets/lists/base/mi) manually'
+			if [ -s "${WORKDIR}"/removedzones ]
+			then
+				printf 'Removed Zones:\n'
+				sed 's/^/	/' < "${WORKDIR}"/removedzones
+			fi
+			if [ -s "${WORKDIR}"/addedzones ]
+			then
+				printf 'Added Zones:\n'
+				sed 's/^/	/' < "${WORKDIR}"/addedzones
+			fi
+		}
+	fi
+}
+
+docupdate()
+{
+	cd -P "${TZBASE}"
+
+	MSG='CHANGES and 3RDPARTY must be updated manually'
+
+	cd -P "${NETBSDSRCDIR:-/nowhere/at/all}" 2>/dev/null || {
+		printf >&2 '%s\n' "${MSG}"
+		return 1
+	}
+
+	if ! [ -d doc ]
+	then
+		printf '%s\n' "No doc directory in ${PWD}" "${MSG}"
+		return 1
+	fi
+	cd -P doc
+	if ! "${Hg:-false}" && ! [ -d CVS ]
+	then
+		printf '%s\n' "No CVS directory in ${PWD}" "${MSG}"
+		return 1
+	fi
+
+	if ! "${Hg:-false}"
+	then
+	    printf 'Making sure doc/CHANGES and doc/3RDPARTY are up to date\n'
+	    cvs -d "${CVSROOT}" -q update -A CHANGES 3RDPARTY
+	fi
+
+	local commit=false
+
+	if grep "tzdata: Updated to ${NEWVER}" CHANGES
+	then
+		printf 'doc/CHANGES has already been updated\n'
+	else
+	    {
+		printf '\ttzdata: Updated to %s' "${NEWVER}"
+		"${GLOBAL}" && printf ' (using %sgtz)' "${NEWVER}"
+		date -u +" [${LOGNAME} %Y%m%d]"
+		commit=true
+	    } >> CHANGES
+	fi
+
+	if grep "^Version:	tzcode[^ 	]* / tzdata${NEWVER}" 3RDPARTY
+	then
+		printf 'doc/3RDPARTY has already been updated\n'
+	else
+		# These just make the sed script below manageable.
+		C=tzcode D=tzdata V=${NEWVER} T=${CVSNEWTAG}
+
+		G=$V
+		"${GLOBAL}" && G=${G}gtz
+
+		YMD=$(date -u +'%Y-%m-%d')
+
+		sed < 3RDPARTY > 3RDPARTY.new				\
+		    -e '1,/^Package:	tz$/{p;d;}'			\
+		    -e '/^Notes:/,${p;d;}'				\
+		    -e "/^Date:	/s,	2.*,	${YMD},"		\
+		    -e "/^Version:	/s, / ${D}.*, / ${D}${G},"	\
+		    -e "/^Current Vers:/s,tz.*$,${C}${V} / ${D}${V}," && {
+
+			mv 3RDPARTY.new 3RDPARTY
+			commit=true
+		}
+	fi
+
+	if "${commit}"
+	then
+		printf 'These are the changes that will be made:\n\n'
+
+		if "${Hg:-false}"
+		then
+			hg diff CHANGES 3RDPARTY || :  # Ugh -e!
+		else
+			cvs -d "${CVSROOT}" diff -u CHANGES 3RDPARTY || :
+		fi
+
+		read -p $'\nAre those OK? [y/n] ' reply
+
+		MSG="Note tzdata${NEWVER} update"
+		if "${GLOBAL}"
+		then
+			MSG="${MSG} (via ${NEWVER}gtz)"
+		fi
+		case "${reply}" in
+		([Yy]*)
+			if "${Hg:-false}"
+			then
+				DOIT hg commit -m "${MSG}" CHANGES 3RDPARTY
+			else
+				DOIT cvs -d "${CVSROOT}" commit -m "${MSG}" \
+					CHANGES 3RDPARTY
+			fi
+			;;
+		(*)	printf '%s\n' \
+			   'OK, correct and commit those files manually' \
+			   'The changes shown above have been made to the files'
+			;;
+		esac
+	fi
+	return 0
+}
+
+extra()
+{
+	cat <<EOF
+Also do the following:
+ * Submit pullup requests for all active release branches.
+ * rm -rf ${WORK_PFX}  (optional)
+ * Verify that
+  ${UPDATE_FROM}
+ * no longer exists.
+
+And if necessary (if not already done by the script):
+ * Edit and commit  src/distrib/sets/lists/base/mi
+ * Edit and commit  src/doc/3RDPARTY
+ * Edit and commit  src/doc/CHANGES
+EOF
+
+	if "${Hg:-false}"
+	then
+		cat <<EOF
+
+Now verify that a release build succeeds.  If it fails, work out
+why and correct the problem.  Iterate until the release build succeeds.
+
+Once that is done:
+
+	hg push
+
+to make this update available to the world.
+EOF
+	fi
+
+	rm -f "${UPDATE_FROM}"	# just to try to make sure, as we're done!
+}
+
+main()
+{
+	set -e
+	validate_pwd
+
+	find_netbsdsrc
+	findcvsroot
+	hginit
+
+	if ! [ -f "${UPDATE_FROM}" ]
+	then
+		cvsupdate || fail 'working directory (dist) update failed:'" $?"
+	fi
+
+	mkworkpfx
+
+	argparse "$@"
+
+	setup_versions
+	mkworkdir
+	fetch
+	"${GLOBAL}" || checksig
+	extract
+
+	zonelists
+
+	addnews
+	trimnews
+	mkimportmsg
+	editimportmsg
+
+	if "${Hg:-false}"
+	then
+		hgimport
+		hgmerge
+	else
+		cvsimport
+		cvsmerge
+		resolveconflicts
+		checkfilecontents
+	fi
+
+	updatedzones	# Aborts the script on failure
+
+	if "${Hg:-false}"
+	then
+		hgcommitmerge
+	else
+		cvscommitmerge
+	fi
+	setlistupdate
+
+	rm -f "${UPDATE_FROM}"
+	rm -fr	"${WORK_PFX}"/oldzones \
+		"${WORK_PFX}"/newzones \
+		"${WORK_PFX}"/updzones
+
+	docupdate
+
+	if "${hg:-false}"
+	then
+		DOIT hg push	# Publish it all!
+	fi
+
+	extra
+}
+
+main "$@"

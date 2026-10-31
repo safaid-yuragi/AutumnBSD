@@ -1,0 +1,9 @@
+# $NetBSD: ad.x86_64,v 1.9 2024/07/11 20:41:10 riastradh Exp $
+#
+./usr/X11R7/bin/inb					xserver-obsolete	obsolete
+./usr/X11R7/bin/inl					xserver-obsolete	obsolete
+./usr/X11R7/bin/inw					xserver-obsolete	obsolete
+./usr/X11R7/bin/ioport					xserver-obsolete	obsolete
+./usr/X11R7/bin/outb					xserver-obsolete	obsolete
+./usr/X11R7/bin/outl					xserver-obsolete	obsolete
+./usr/X11R7/bin/outw					xserver-obsolete	obsolete

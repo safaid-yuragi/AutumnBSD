@@ -1,0 +1,64 @@
+$NetBSD: ports,v 1.11 2024/05/03 09:00:59 nia Exp $
+
+NetBSD Ports Roadmap
+====================
+
+This roadmap covers ports and port-specific issues, and also bus-level
+material even if it's not strictly port-specific.
+
+The following elements, projects, and goals are considered strategic
+priorities for the project:
+
+ 0. DRMKMS update
+
+The following elements, projects, and goals are not strategic
+priorities but are still important undertakings worth doing:
+
+ 1. c-sky port
+ 2. latticemico32 port
+ 3. or1k port
+ 4. cheri port
+
+The following elements, projects, and goals are perhaps less pressing;
+this doesn't mean one shouldn't work on them but the expected payoff
+is perhaps less than for other things:
+
+ [none presently]
+
+
+Explanations
+============
+
+ 0. DRMKMS update
+
+The DRM drivers get old with time. The current drivers are from Linux 5.6,
+having a newer version would be nice.
+
+ 1. c-sky port
+
+C-Sky is a low-end 32-bit architecture common in devices in China.
+It is "inspired by" the M-CORE architecture from Motorola, with
+the addition of a MMU.
+
+As of 2024, low cost development boards exist and support exists in
+upstream GCC.  However, there is no NetBSD code.
+
+As of 2024, nobody is working on this.
+
+ 2. LatticeMico32 port
+
+Code exists in the inactive EdgeBSD fork, targeting the Milkymist SoC.
+
+As of 2024, nobody is working on importing it.
+
+ 3. or1k port
+
+We have a bit of or1k code, but it's not complete.
+As of 2024, we have a risc-v port, and due to the industry prioritizing
+risc-v it's unclear if or1k has a future.
+
+ 4. cheri port
+
+http://cheri-cpu.org
+There are a number of reasons to tackle this; it will serve as a code
+quality lever. Also there's already a FreeBSD port to steal from.

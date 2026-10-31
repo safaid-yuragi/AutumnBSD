@@ -1,0 +1,15 @@
+# $NetBSD: md.sparc64,v 1.264 2024/07/11 20:41:06 riastradh Exp $
+#
+./sbin/edlabel					base-obsolete	obsolete
+./usr/bin/fdformat				base-util-bin
+./usr/mdec/binstall				base-sysutil-bin
+./usr/mdec/bootblk				base-sysutil-bin
+./usr/mdec/installboot				base-obsolete		obsolete
+./usr/mdec/ofwboot				base-sysutil-bin
+./usr/mdec/ofwboot.net				base-sysutil-bin
+./usr/sbin/eeprom				base-sysutil-bin
+./usr/sbin/ofctl				base-sysutil-bin
+./usr/share/sysinst/catalog/sysinstmsgs.de	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.es	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.fr	base-util-share
+./usr/share/sysinst/catalog/sysinstmsgs.pl	base-util-share

@@ -1,0 +1,140 @@
+.\"	$NetBSD: ldd.1,v 1.27 2025/02/01 22:19:57 kre Exp $
+.\"
+.\" Copyright (c) 1998 The NetBSD Foundation, Inc.
+.\" All rights reserved.
+.\"
+.\" This code is derived from software contributed to The NetBSD Foundation
+.\" by Paul Kranenburg.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE NETBSD FOUNDATION, INC. AND CONTRIBUTORS
+.\" ``AS IS'' AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED
+.\" TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR
+.\" PURPOSE ARE DISCLAIMED.  IN NO EVENT SHALL THE FOUNDATION OR CONTRIBUTORS
+.\" BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+.\" CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+.\" SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+.\" INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+.\" CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+.\" ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+.\" POSSIBILITY OF SUCH DAMAGE.
+.\"
+.Dd February 1, 2025
+.Dt LDD 1
+.Os
+.
+.Sh NAME
+.Nm ldd
+.Nd list dynamic object dependencies
+.Sh SYNOPSIS
+.Nm
+.Op Fl ov
+.Op Fl f Ar format
+.Ar program ...
+.
+.Sh DESCRIPTION
+.Nm
+displays all shared objects that are needed to run the given program.
+Unlike
+.Xr nm 1 ,
+the list includes
+.Dq indirect
+dependencies that are the result of needed shared objects which themselves
+depend on yet other shared objects.
+.Pp
+Zero, one or two
+.Fl f
+options may be given.
+The argument is a format string that allows customization of
+.Nm Ap s
+output.
+The first format argument is used for library objects and defaults to
+.Ql \et-l%o.%m => %p\en .
+The second format argument is used for non-library objects and defaults to
+.Ql \et%o => %p\en .
+.Pp
+These arguments are interpreted as format strings a\~la
+.Xr printf 3
+to customize the trace output and allow
+.Nm
+to be operated as a filter more conveniently.
+The following conversions can be used:
+.Bl -tag -width Ds -offset indent
+.
+.It Li %a
+The main program's absolute path,
+constructed either from the exact argument passed to
+.Nm
+if it is an absolute path,
+or having the current working directory prepended to it if not.
+.
+.It Li \&%A \" NB: .%A is a mdoc macro name
+The program name from the argument vector.
+.
+.It Li %o
+The library name.
+.
+.It Li %m
+The library's major version number.
+.
+.It Li %n
+.Em Obsolete
+.Pq a.out .
+The library's minor version number,
+expands to an empty string in
+.Tn ELF .
+.
+.It Li %p
+The full pathname as determined by
+.Nm rtld Ap s
+library search rules.
+.
+.It Li %x
+The library's load address
+.El
+.Pp
+Additionally,
+.Ql \en
+and
+.Ql \et
+are recognized and have their usual meaning.
+.Pp
+The
+.Fl o
+option is a shorthand to set the format for library objects to
+.Ql %a:-l%o.%m => %p\en ,
+which makes
+.Nm
+behave analogously to
+.Ic nm Fl o .
+It cannot be combined with
+.Fl f .
+.Pp
+The
+.Fl v
+option turns on verbose mode.
+.
+.Sh EXIT STATUS
+.Ex -std
+.
+.Sh SEE ALSO
+.Xr ld 1 ,
+.Xr ld.elf_so 1 ,
+.Xr nm 1 ,
+.Xr rtld 1
+.
+.Sh HISTORY
+A
+.Nm
+utility first appeared in
+.Tn SunOS 4.0 .
+It appeared in its current form in
+.Nx 0.9a .

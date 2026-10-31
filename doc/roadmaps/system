@@ -1,0 +1,90 @@
+$NetBSD: system,v 1.14 2025/05/19 18:02:53 nia Exp $
+
+NetBSD System Roadmap
+=====================
+
+This is a roadmap document dealing deals with core system aspects of
+the operating system.
+
+The following elements, projects, and goals are considered strategic
+priorities for the project:
+
+1. Tickless timing and scheduling (discussed in the mobile roadmap)
+2. Long-term graphics architecture (discussed in the desktop roadmap)
+8. Processor and cache topology aware scheduler
+
+The following elements, projects, and goals are not strategic
+priorities but are still important undertakings worth doing:
+
+3. Full kernel preemption for real-time threads on non-x86
+4. POSIX shared memory
+6. Better resource controls
+7. Improved observability: online crashdumps, remote debugging
+
+The following elements, projects, and goals are perhaps less pressing;
+this doesn't mean one shouldn't work on them but the expected payoff
+is perhaps less than for other things:
+
+
+Some explanations
+=================
+
+3. Full kernel preemption for real-time threads on non-x86
+----------------------------------------------------------
+
+With the revamp of the kernel concurrency model, much of the kernel is
+fully multi-threaded and can therefore be preempted at any time.  In
+support of lower context switch and dispatch times for real-time
+threads, full kernel preemption is being implemented.  This has been
+implemented already for i386 and x86_64 (and is in 5.0), but needs to
+be extended to support ARM and other ports.  MIPS has this, as does
+PowerPC, but it is not yet enabled.
+
+Responsible: rmind
+
+
+4. POSIX shared memory
+----------------------
+
+Implement POSIX shared memory facilities, which can be used to create
+the shared memory objects and add the memory locations to the address
+space of a process.  Changes were proposed on tech-kern, although
+there were some concerns with the kernel implementation, and so a
+different approach using wrapper functions on tmpfs is being aimed at
+for 6.0.
+
+XXX: what's the current state?
+
+Responsible: rmind
+
+
+6. Better resource controls
+---------------------------
+
+A resource provisioning and control framework that extends beyond the
+traditional Unix process limits.
+
+Responsible: TBD
+
+
+7. Improved observability: online crashdumps, remote debugging
+--------------------------------------------------------------
+
+XXX crashdumps while the system is running
+XXX firewire support in libkvm
+
+Responsible: TBD
+
+
+8. Processor and cache topology aware scheduler
+-----------------------------------------------
+
+Work was done by various people to make the Arm64 port support
+big.LITTLE well, ad@ did the final bits to improve the scheduler
+to make it aware of CPU topology and mixtures of slow and fast
+cores.
+
+This made it into NetBSD 10.0.
+
+Alistair Crooks
+Sat Jan 14 11:40:49 PST 2012
