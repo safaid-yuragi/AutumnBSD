@@ -14,6 +14,7 @@ account		required	pam_login_access.so
 account		include		system
 
 # session
+session		optional	pam_exec.so	/usr/sbin/aprefctl boot-done
 session		include		system
 
 # password

@@ -15,7 +15,8 @@
 
 CONFIGFILES=\
 		CRITLOCALMOUNTED DAEMON DISKS LOGIN NETWORKING SERVERS \
-		accounting altqd amd apmd automount automountd autounmountd \
+		accounting altqd amd apmd aprefd \
+		automount automountd autounmountd \
 		bluetooth bootconf.sh bootparams \
 		ccd certctl_init cgd clearcritlocal cleartmp cron \
 		devpubd dhcpcd dhcpd dhcpd6 dhcrelay dmesg \

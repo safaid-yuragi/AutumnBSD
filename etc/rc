@@ -104,6 +104,17 @@ rc_real_work()
 	print_rc_metadata "start:$(date)"
 
 	#
+	# Leave aprefetch(4) marks around each rc.d script, for
+	# "aprefctl marks".  echo(1) is built in, so this costs no fork.
+	#
+	if (: >/dev/aprefetch) 2>/dev/null; then
+		_rc_mark() { echo "$*" >/dev/aprefetch; }
+	else
+		_rc_mark() { :; }
+	fi
+	_rc_mark "rc: start"
+
+	#
 	# The stop_boot() function in rc.subr may kill $RC_PID.  We want
 	# it to kill the subshell running this rc_real_work() function,
 	# rather than killing the parent shell, because we want the
@@ -170,14 +181,18 @@ rc_real_work()
 	#
 	for _rc_elem in $files; do
 		print_rc_metadata "cmd-name:$_rc_elem"
+		_rc_mark "start ${_rc_elem##*/}"
 		run_rc_script "$_rc_elem" start
-		print_rc_metadata "cmd-status:$_rc_elem:$?"
+		_rc_status=$?
+		_rc_mark "done ${_rc_elem##*/}"
+		print_rc_metadata "cmd-status:$_rc_elem:$_rc_status"
 	done
 
 	if [ "$_rc_update_rcorder_cache" = YES ]; then
 		_rc_order_save_cache
 	fi
 
+	_rc_mark "rc: done"
 	print_rc_metadata "end:$(date)"
 	exit 0
 )

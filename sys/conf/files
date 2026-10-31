@@ -1530,6 +1530,10 @@ file	dev/veriexec.c		veriexec	needs-flag
 defpseudo drvctl
 file	kern/kern_drvctl.c		drvctl		needs-flag
 
+# recording and prefetch of boot-time file reads
+defpseudo aprefetch
+file	kern/vfs_aprefetch.c		aprefetch	needs-flag
+
 # cpu control
 defpseudo cpuctl
 defflag				CPU_UCODE: firmload

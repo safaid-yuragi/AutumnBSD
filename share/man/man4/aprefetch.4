@@ -1,0 +1,223 @@
+.\"	$NetBSD$
+.\"
+.\" Copyright (c) 2026 yuragi
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd October 31, 2026
+.Dt APREFETCH 4
+.Os
+.Sh NAME
+.Nm aprefetch
+.Nd record boot-time file reads and prefetch them on the next boot
+.Sh SYNOPSIS
+.Cd "pseudo-device aprefetch"
+.Sh DESCRIPTION
+The
+.Nm
+driver records which pages of which files are read while the system boots.
+On the next boot it reads those pages ahead, in the order of their blocks
+on the disk, so that one sweep of the disk replaces the seeks of a cold
+boot.
+Only regular files on FFS file systems are recorded and prefetched.
+.Pp
+A failure anywhere only means that nothing is prefetched; the contents of
+files are never affected, and the driver never writes to a disk.
+.Ss Recording
+While a recording window is open, every read of a page of a file, whether
+by
+.Xr read 2
+or by a page fault on a mapping, adds an access entry.
+Reads served from memory are recorded too, so that the entries describe
+everything the boot needed.
+Consecutive reads of the same file by the same process are merged into one
+entry.
+Each CPU keeps its own ring of entries; when a ring is full, new entries are
+dropped and counted.
+.Pp
+The boot window opens when the root file system is mounted and closes at
+the first login
+.Pq Dv APREFIOC_BOOTDONE ,
+on
+.Dv APREFIOC_RECSTOP ,
+or after
+.Va kern.aprefetch.record_timeout
+seconds.
+.Pp
+.Xr read 2
+returns
+.Vt struct aprefetch_rec
+entries, as defined in
+.In sys/aprefetch.h .
+It waits while the window is open and no entry is available, and returns
+end-of-file once the window has closed and every entry has been read.
+.Ss Replay
+After the root file system is mounted, a kernel thread reads the boot
+profile
+.Pa /etc/aprefetch/boot.prof .
+The profile is ignored, and only recording takes place, if it is missing,
+not owned by root, writable by group or others, larger than 16 MB, or if
+its magic number, version or checksum is wrong.
+.Pp
+The entries are in the order in which the data was first read; those that
+fit in
+.Va kern.aprefetch.boot_budget
+are taken in that order and the rest is dropped.
+Each file is looked up by its inode and generation number, so that an entry
+for a file that was removed or replaced is dropped, as is the part of an
+entry beyond the end of a file that has shrunk.
+Entries for a file system that is not mounted yet are kept until it is
+mounted.
+The ranges are then mapped to disk blocks, sorted by disk and block number,
+and read ahead asynchronously in that order, with at most
+.Va kern.aprefetch.max_io
+reads in flight.
+.Pp
+A page that a process is reading already is skipped.
+A process that wants a page the replay has issued waits for that read; if
+the read fails, the page is dropped, the process reads it itself, and the
+replay does not read it again.
+I/O errors are only counted.
+.Pp
+The budget is charged when a read is issued, not when it completes.
+The replay stops when everything has been issued, when the budget is used
+up, after
+.Va kern.aprefetch.replay_timeout
+seconds, when free memory falls below twice the pagedaemon target, or when
+.Va kern.aprefetch.enable
+is cleared.
+However it stops, it waits for its reads to complete before it releases
+the files.
+.Ss Unmounting
+Before an unmount suspends a file system, the replay drops the entries it
+has not processed there, waits for its reads on that file system, releases
+its files and only then lets the unmount continue.
+The replay therefore never makes an unmount fail or wait for long.
+.Ss Marks
+A
+.Xr write 2
+to the device stores a mark: the label written, up to 47 characters
+without a trailing newline, the time since boot, and the read counters of
+the disk that holds the root file system.
+.Pa /etc/rc
+writes a mark before and after each
+.Xr rc.d 8
+script.
+The kernel adds
+.Dq kernel: root mounted ,
+.Dq kernel: init ,
+.Dq replay: start ,
+.Dq replay: end
+and
+.Dq boot-done .
+Marks are kept even when recording and replay are turned off, so that
+a boot without prefetch can be measured the same way.
+Up to 1024 marks are kept.
+.Ss Turning it off
+.Va kern.aprefetch.enable
+turns recording and replay off.
+On x86, booting with the
+.Fl 4
+flag of
+.Xr boot 8 ,
+which the default boot menu offers as
+.Dq Boot without prefetch ,
+turns them off for that boot.
+.Sh IOCTLS
+The following
+.Xr ioctl 2
+commands are defined in
+.In sys/aprefetch.h :
+.Bl -tag -width APREFIOC_GETMARKS
+.It Dv APREFIOC_STATUS Fa "struct aprefetch_status"
+Whether a window is open, since when, and whether a replay is running.
+.It Dv APREFIOC_RECSTART
+Open a recording window.
+Entries of an earlier window that were not read are discarded.
+.It Dv APREFIOC_RECSTOP
+Close the recording window.
+.It Dv APREFIOC_BOOTDONE
+Close the boot window, if it is open.
+.It Dv APREFIOC_FLUSH
+Make the entries being merged available to
+.Xr read 2 .
+.It Dv APREFIOC_GETMARKS Fa "struct aprefetch_marks"
+Copy the marks.
+.It Dv APREFIOC_BMAP Fa "struct aprefetch_bmap"
+Map a recorded range of a file to disk blocks.
+.It Dv APREFIOC_REPLAY Fa "struct aprefetch_replay"
+Replay a profile image now, with the given budget or
+.Va kern.aprefetch.app_budget .
+Fails with
+.Er EBUSY
+if a replay is running.
+.El
+.Sh SYSCTL VARIABLES
+.Bl -tag -width kern.aprefetch.replay_timeout
+.It Va kern.aprefetch.enable
+Record and replay file reads; 1 by default.
+.It Va kern.aprefetch.boot_budget
+Bytes the boot replay may read; 256 MB by default.
+.It Va kern.aprefetch.app_budget
+Bytes a replay started with
+.Dv APREFIOC_REPLAY
+may read by default; 64 MB by default.
+.It Va kern.aprefetch.max_io
+Reads a replay keeps in flight, from 1 to 64; 8 by default.
+.It Va kern.aprefetch.replay_timeout
+Seconds after which a replay stops; 60 by default.
+.It Va kern.aprefetch.record_timeout
+Seconds after which a recording window closes; 120 by default.
+.It Va kern.aprefetch.stats
+Read-only
+.Vt struct aprefetch_stats :
+entries recorded and dropped, reads served from memory or not, and for the
+replays the entries taken, dropped as stale and deferred, the reads and
+pages issued, the pages that were in memory already, the pages lost to
+errors, how the last replay ended and how long it took.
+.El
+.Sh FILES
+.Bl -tag -width /etc/aprefetch/boot.prof -compact
+.It Pa /dev/aprefetch
+the device, readable and writable by root only
+.It Pa /etc/aprefetch/boot.prof
+the boot profile
+.It Pa /var/db/aprefetch
+the traces from which
+.Xr aprefd 8
+builds the profile
+.El
+.Sh SEE ALSO
+.Xr aprefctl 8 ,
+.Xr aprefd 8 ,
+.Xr boot 8
+.Sh HISTORY
+The
+.Nm
+driver was written for AutumnBSD.
+.Sh CAVEATS
+File system metadata, such as inodes and directories, is neither recorded
+nor prefetched.
+.Pp
+The profile and the traces record which files were read and when.
+They are readable by root only, and record inode numbers, not file names.

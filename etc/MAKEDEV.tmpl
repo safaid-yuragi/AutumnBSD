@@ -215,6 +215,7 @@
 #	altq	ALTQ control interface
 #	amr*	AMI MegaRaid control device
 #	apm	power management device
+#	aprefetch	boot-time file prefetch control
 #	audio*	audio devices
 #	bell*	OPM bell device (x68k)
 #	bktr	Brooktree 848/849/878/879 based TV cards
@@ -837,6 +838,7 @@ all)
 	makedev bthub
 	makedev putter
 	makedev drvctl
+	makedev aprefetch
 	makedev video
 	makedev dtv
 	makedev drm0 drm1 drm2 drm3
@@ -2176,6 +2178,10 @@ drm[0-9]*)
 	makedir dri 755
 	mkdev dri/card$unit c %drm_chr% $unit 660
 	mkdev dri/renderD${unit2} c %drm_chr% ${unit2} 660
+	;;
+
+aprefetch)
+	mkdev aprefetch c %aprefetch_chr% 0 600
 	;;
 
 drvctl)

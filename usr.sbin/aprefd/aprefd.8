@@ -1,0 +1,111 @@
+.\"	$NetBSD$
+.\"
+.\" Copyright (c) 2026 yuragi
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd October 31, 2026
+.Dt APREFD 8
+.Os
+.Sh NAME
+.Nm aprefd
+.Nd collect boot-time file reads and update the boot profile
+.Sh SYNOPSIS
+.Nm
+.Op Fl dn
+.Op Fl k Ar keep
+.Op Fl m Ar min
+.Sh DESCRIPTION
+.Nm
+reads the access entries that
+.Xr aprefetch 4
+records during the boot, until the boot recording window closes at the
+first login or on timeout.
+It then saves them as a trace,
+.Pa /var/db/aprefetch/boot.trace ,
+renaming the older traces to
+.Pa boot.trace.1 ,
+.Pa boot.trace.2
+and so on, and rebuilds the boot profile
+.Pa /etc/aprefetch/boot.prof
+from the newest traces, and exits.
+.Pp
+The profile keeps the pages that were read in at least
+.Ar min
+of the newest
+.Ar keep
+traces, or in all of them while there are fewer, so that work done in only
+one boot does not make the profile grow.
+The pages are grouped into ranges of a file and ordered by the time at
+which the newest trace that has them read them first, so that when the
+budget of the replay runs out, what was read early is kept.
+The profile is limited to 16 MB and to the eight file systems with the most
+pages.
+.Pp
+Both files are written to a temporary name and renamed into place, with
+mode 0600.
+.Pp
+The options are as follows:
+.Bl -tag -width indent
+.It Fl d
+Stay in the foreground and report to the standard error instead of
+.Xr syslog 3 .
+.It Fl k Ar keep
+Keep and use this many traces, from 1 to 9; 3 by default.
+.It Fl m Ar min
+A page must be in this many traces; 2 by default.
+.It Fl n
+Save the trace but leave the profile alone.
+With no profile, this records without prefetching.
+.El
+.Pp
+.Nm
+is started at boot by
+.Pa /etc/rc.d/aprefd
+when
+.Va aprefd
+is set in
+.Xr rc.conf 5 ,
+which is the default.
+.Sh FILES
+.Bl -tag -width /var/db/aprefetch/boot.trace -compact
+.It Pa /dev/aprefetch
+.It Pa /etc/aprefetch/boot.prof
+.It Pa /var/db/aprefetch/boot.trace
+.It Pa /var/run/aprefd.pid
+.El
+.Sh EXAMPLES
+To measure a boot that records but does not prefetch, remove the profile
+and keep
+.Nm
+from making a new one:
+.Bd -literal -offset indent
+# aprefctl delete boot
+# echo 'aprefd_flags="-n"' >> /etc/rc.conf
+.Ed
+.Sh SEE ALSO
+.Xr aprefetch 4 ,
+.Xr aprefctl 8
+.Sh HISTORY
+.Nm
+was written for AutumnBSD.

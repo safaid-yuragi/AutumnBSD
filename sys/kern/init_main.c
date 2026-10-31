@@ -125,6 +125,7 @@ extern void *_binary_splash_image_end;
 
 #include "ksyms.h"
 
+#include "aprefetch.h"
 #include "veriexec.h"
 
 #include <sys/param.h>
@@ -192,6 +193,9 @@ extern void *_binary_splash_image_end;
 #if NVERIEXEC > 0
 #include <sys/verified_exec.h>
 #endif /* NVERIEXEC > 0 */
+#if NAPREFETCH > 0
+#include <sys/aprefetch.h>
+#endif /* NAPREFETCH > 0 */
 #ifdef KTRACE
 #include <sys/ktrace.h>
 #endif
@@ -748,6 +752,11 @@ main(void)
 	/* Wait for final configure threads to complete. */
 	config_finalize_mountroot();
 
+#if NAPREFETCH > 0
+	/* Start recording reads, and the boot replay, before init runs. */
+	aprefetch_boot();
+#endif /* NAPREFETCH > 0 */
+
 	/*
 	 * Okay, now we can let init(8) exec!  It's off to userland!
 	 */
@@ -1000,6 +1009,10 @@ start_init(void *arg)
 	while (start_init_exec == 0)
 		cv_wait(&lbolt, &proc_lock);
 	mutex_exit(&proc_lock);
+
+#if NAPREFETCH > 0
+	aprefetch_kmark("kernel: init");
+#endif /* NAPREFETCH > 0 */
 
 	/*
 	 * This is not the right way to do this.  We really should

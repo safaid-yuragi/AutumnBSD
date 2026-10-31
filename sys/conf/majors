@@ -99,3 +99,4 @@ device-major viocon    char 364		   viocon
 device-major gpioirq   char 365		   gpioirq
 device-major umcpmio   char 366		   umcpmio
 device-major emcfan    char 367		   emcfan
+device-major aprefetch char 368		   aprefetch

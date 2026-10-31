@@ -189,6 +189,7 @@
 ./etc/rc.d/altqd				etc-router-rc
 ./etc/rc.d/amd					etc-amd-rc
 ./etc/rc.d/apmd					etc-sys-rc
+./etc/rc.d/aprefd				etc-sysutil-rc
 ./etc/rc.d/automount				etc-sys-rc
 ./etc/rc.d/automountd				etc-sys-rc
 ./etc/rc.d/autounmountd				etc-sys-rc
