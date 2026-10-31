@@ -973,6 +973,7 @@
 ./usr/share/man/cat4/ams.0			man-sys-catman		.cat
 ./usr/share/man/cat4/an.0			man-sys-catman		.cat
 ./usr/share/man/cat4/apei.0			man-sys-catman		.cat
+./usr/share/man/cat4/aprefetch.0		man-sys-catman		.cat
 ./usr/share/man/cat4/aps.0			man-sys-catman		.cat
 ./usr/share/man/cat4/aq.0			man-sys-catman		.cat
 ./usr/share/man/cat4/arc/intro.0		man-sys-catman		.cat
@@ -2724,6 +2725,8 @@
 ./usr/share/man/cat8/apm.0			man-sysutil-catman	.cat
 ./usr/share/man/cat8/apmd.0			man-sysutil-catman	.cat
 ./usr/share/man/cat8/apmlabel.0			man-sysutil-catman	.cat
+./usr/share/man/cat8/aprefctl.0			man-sysutil-catman	.cat
+./usr/share/man/cat8/aprefd.0			man-sysutil-catman	.cat
 ./usr/share/man/cat8/arc/MAKEDEV.0		man-obsolete		obsolete
 ./usr/share/man/cat8/arc/makedev.0		man-obsolete		obsolete
 ./usr/share/man/cat8/arm26/BBBB.0		man-obsolete		obsolete
@@ -4584,6 +4587,7 @@
 ./usr/share/man/man4/ams.4			man-sys-man		.man
 ./usr/share/man/man4/an.4			man-sys-man		.man
 ./usr/share/man/man4/apei.4			man-sys-man		.man
+./usr/share/man/man4/aprefetch.4		man-sys-man		.man
 ./usr/share/man/man4/aps.4			man-sys-man		.man
 ./usr/share/man/man4/aq.4			man-sys-man		.man
 ./usr/share/man/man4/arc/intro.4		man-sys-man		.man
@@ -6335,6 +6339,8 @@
 ./usr/share/man/man8/apm.8			man-sysutil-man		.man
 ./usr/share/man/man8/apmd.8			man-sysutil-man		.man
 ./usr/share/man/man8/apmlabel.8			man-sysutil-man		.man
+./usr/share/man/man8/aprefctl.8			man-sysutil-man		.man
+./usr/share/man/man8/aprefd.8			man-sysutil-man		.man
 ./usr/share/man/man8/arc/MAKEDEV.8		man-obsolete		obsolete
 ./usr/share/man/man8/arc/makedev.8		man-obsolete		obsolete
 ./usr/share/man/man8/arm26/BBBB.8		man-obsolete		obsolete

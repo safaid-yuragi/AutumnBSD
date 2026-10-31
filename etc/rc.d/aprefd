@@ -1,0 +1,19 @@
+#!/bin/sh
+#
+# $NetBSD$
+#
+
+# PROVIDE: aprefd
+# REQUIRE: mountcritlocal
+# BEFORE:  DAEMON
+
+$_rc_subr_loaded . /etc/rc.subr
+
+name="aprefd"
+rcvar=$name
+command="/usr/sbin/${name}"
+pidfile="/var/run/${name}.pid"
+required_files="/dev/aprefetch"
+
+load_rc_config $name
+run_rc_command "$1"

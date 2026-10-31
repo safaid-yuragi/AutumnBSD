@@ -69,11 +69,13 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD: vfs_mount.c,v 1.111 2026/03/22 13:03:26 yamt Exp $");
 
+#include "aprefetch.h"
 #include "veriexec.h"
 
 #include <sys/param.h>
 #include <sys/kernel.h>
 
+#include <sys/aprefetch.h>
 #include <sys/atomic.h>
 #include <sys/buf.h>
 #include <sys/conf.h>
@@ -912,6 +914,11 @@ mount_domount(struct lwp *l, vnode_t **vpp, struct vfsops *vfsops,
 		if (start_extattr(mp) != 0)
 			mp->mnt_flag &= ~MNT_EXTATTR;
 	}
+#if NAPREFETCH > 0
+	/* A replay may have entries waiting for this file system. */
+	if (error == 0)
+		aprefetch_mount(mp);
+#endif
 	/* Drop reference held for VFS_START(). */
 	vfs_rele(mp);
 	*vpp = NULL;
@@ -950,6 +957,14 @@ dounmount(struct mount *mp, int flags, struct lwp *l)
 #endif /* NVERIEXEC > 0 */
 
 	if (!was_suspended) {
+#if NAPREFETCH > 0
+		/*
+		 * Let aprefetch(4) release its vnodes here before we
+		 * suspend: on a suspended file system its replay would
+		 * sleep in vfs_busy() or VOP_GETPAGES and never answer.
+		 */
+		aprefetch_unmount(mp);
+#endif
 		error = vfs_suspend(mp, 0);
 		if (error) {
 			return error;

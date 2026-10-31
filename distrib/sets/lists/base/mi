@@ -93,6 +93,7 @@
 ./etc/X11/xinit					base-x11-root
 ./etc/X11/xserver				base-x11-root
 ./etc/X11/xsm					base-x11-root
+./etc/aprefetch					base-sys-root
 ./etc/atf					base-atf-bin
 ./etc/autofs					base-sys-root
 ./etc/cgd					base-sys-root
@@ -1467,6 +1468,8 @@
 ./usr/sbin/amd					base-amd-bin
 ./usr/sbin/amldb				base-sysutil-bin	acpi
 ./usr/sbin/amq					base-amd-bin
+./usr/sbin/aprefctl				base-sysutil-bin
+./usr/sbin/aprefd				base-sysutil-bin
 ./usr/sbin/arp					base-netutil-bin
 ./usr/sbin/audit-packages			base-pkgutil-bin
 ./usr/sbin/authpf				base-pf-bin		pf
@@ -6453,6 +6456,7 @@
 ./var/cron					base-cron-root
 ./var/cron/tabs					base-cron-root
 ./var/db					base-sys-root
+./var/db/aprefetch				base-sys-root
 ./var/db/dhcpcd					base-dhcpcd-root
 ./var/db/ns					base-sys-root
 ./var/db/obsolete				base-sys-root

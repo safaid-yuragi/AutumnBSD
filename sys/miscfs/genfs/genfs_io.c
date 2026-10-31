@@ -33,6 +33,8 @@
 #include <sys/cdefs.h>
 __KERNEL_RCSID(0, "$NetBSD: genfs_io.c,v 1.106 2026/06/03 15:01:00 yamt Exp $");
 
+#include "aprefetch.h"
+
 #include <sys/param.h>
 #include <sys/systm.h>
 #include <sys/proc.h>
@@ -44,6 +46,7 @@ __KERNEL_RCSID(0, "$NetBSD: genfs_io.c,v 1.106 2026/06/03 15:01:00 yamt Exp $");
 #include <sys/fstrans.h>
 #include <sys/buf.h>
 #include <sys/atomic.h>
+#include <sys/aprefetch.h>
 
 #include <miscfs/genfs/genfs.h>
 #include <miscfs/genfs/genfs_node.h>
@@ -203,6 +206,13 @@ startover:
 	}
 
 	/* uobj is locked */
+
+#if NAPREFETCH > 0
+	/* While aprefetch(4) is recording, tell it about this read. */
+	if (__predict_false(atomic_load_relaxed(&aprefetch_recording)))
+		aprefetch_getpages(vp, origoffset, orignpages,
+		    ap->a_centeridx, flags, memwrite, ap->a_m == NULL);
+#endif
 
 	if ((flags & PGO_NOTIMESTAMP) == 0 &&
 	    (vp->v_type != VBLK ||

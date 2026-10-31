@@ -891,6 +891,7 @@
 ./usr/share/man/html4/ams.html			man-sys-htmlman		html
 ./usr/share/man/html4/an.html			man-sys-htmlman		html
 ./usr/share/man/html4/apei.html			man-sys-htmlman		html
+./usr/share/man/html4/aprefetch.html		man-sys-htmlman		html
 ./usr/share/man/html4/aps.html			man-sys-htmlman		html
 ./usr/share/man/html4/aq.html			man-sys-htmlman		html
 ./usr/share/man/html4/arc/intro.html		man-sys-htmlman		html
@@ -2488,6 +2489,8 @@
 ./usr/share/man/html8/apm.html			man-sysutil-htmlman	html
 ./usr/share/man/html8/apmd.html			man-sysutil-htmlman	html
 ./usr/share/man/html8/apmlabel.html		man-sysutil-htmlman	html
+./usr/share/man/html8/aprefctl.html		man-sysutil-htmlman	html
+./usr/share/man/html8/aprefd.html		man-sysutil-htmlman	html
 ./usr/share/man/html8/arp.html			man-netutil-htmlman	html
 ./usr/share/man/html8/atactl.html		man-sysutil-htmlman	html
 ./usr/share/man/html8/atari/ahdilabel.html	man-sysutil-htmlman	html

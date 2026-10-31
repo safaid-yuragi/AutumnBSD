@@ -25,6 +25,7 @@
 ./etc/X11/xinit
 ./etc/X11/xserver
 ./etc/X11/xsm
+./etc/aprefetch			mode=0700
 ./etc/atf
 ./etc/autofs
 ./etc/bluetooth
@@ -1446,6 +1447,7 @@
 ./var/cron
 ./var/cron/tabs			mode=0700
 ./var/db
+./var/db/aprefetch		mode=0700
 ./var/db/dhcpcd			mode=0750
 ./var/db/ns
 ./var/db/obsolete
