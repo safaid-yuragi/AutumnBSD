@@ -126,6 +126,7 @@
 __KERNEL_RCSID(0, "$NetBSD: vfs_bio.c,v 1.309 2026/09/21 04:24:36 tsutsui Exp $");
 
 #ifdef _KERNEL_OPT
+#include "aprefetch.h"
 #include "opt_biohist.h"
 #include "opt_bufcache.h"
 #include "opt_dtrace.h"
@@ -134,6 +135,8 @@ __KERNEL_RCSID(0, "$NetBSD: vfs_bio.c,v 1.309 2026/09/21 04:24:36 tsutsui Exp $"
 #include <sys/param.h>
 #include <sys/types.h>
 
+#include <sys/aprefetch.h>
+#include <sys/atomic.h>
 #include <sys/bitops.h>
 #include <sys/buf.h>
 #include <sys/conf.h>
@@ -699,6 +702,14 @@ bio_doread(struct vnode *vp, daddr_t blkno, int size, int async)
 		return NULL;
 	}
 
+#if NAPREFETCH > 0
+	/* While aprefetch(4) is recording, tell it about this read. */
+	if (__predict_false(atomic_load_relaxed(&aprefetch_recording)) &&
+	    !async)
+		aprefetch_bread(vp, blkno, size,
+		    !ISSET(bp->b_oflags, (BO_DONE | BO_DELWRI)));
+#endif
+
 	/*
 	 * If buffer does not have data valid, start a read.
 	 * Note that if buffer is BC_INVAL, getblk() won't return it.
@@ -766,6 +777,40 @@ bread(struct vnode *vp, daddr_t blkno, int size, int flags, buf_t **bpp)
 
 	return error;
 }
+
+#if NAPREFETCH > 0
+/*
+ * Start reading a block into the buffer cache for aprefetch(4), unless
+ * it is there already, and have done, which must release the buffer,
+ * called when the read is over.  The size must be the one that the file
+ * system uses for the block, or getblk() would resize the buffer.
+ * Returns true if a read was started.
+ */
+bool
+aprefetch_bio_read(struct vnode *vp, daddr_t blkno, int size,
+    void (*done)(buf_t *))
+{
+	buf_t *bp;
+
+	mutex_enter(&bufcache_lock);
+	bp = incore(vp, blkno);
+	mutex_exit(&bufcache_lock);
+	if (bp != NULL)
+		return false;
+	if ((bp = getblk(vp, blkno, size, 0, 0)) == NULL)
+		return false;
+	if (ISSET(bp->b_oflags, (BO_DONE | BO_DELWRI))) {
+		/* Someone read it in the meantime. */
+		brelse(bp, 0);
+		return false;
+	}
+	SET(bp->b_flags, B_READ | B_ASYNC);
+	bp->b_iodone = done;
+	BIO_SETPRIO(bp, BPRIO_TIMELIMITED);
+	VOP_STRATEGY(vp, bp);
+	return true;
+}
+#endif
 
 /*
  * Read-ahead multiple disk blocks. The first is sync, the rest async.

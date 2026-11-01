@@ -50,8 +50,25 @@
 	 ((uint64_t)(uint32_t)(fsidx).__fsid_val[1] << 32))
 
 /*
+ * What an access entry or a profile entry reads.  File data goes through
+ * the page cache.  FFS metadata goes through the buffer cache, which
+ * finds a block by vnode and block number: directories and symbolic
+ * links by their own vnode, inodes and the rest by the device's.
+ */
+#define	APREF_KIND_DATA		0x00	/* pages of a regular file */
+#define	APREF_KIND_VBLK		0x10	/* block of a directory or link */
+#define	APREF_KIND_DBLK		0x20	/* block of the device */
+
+/*
  * Access entry, returned by read(2): one or more consecutive reads of a
- * file by one process.
+ * file by one process, or one read of a metadata block.
+ *
+ * For APREF_KIND_DATA, ar_off is the offset in the file and ar_npages
+ * the length.  For APREF_KIND_VBLK, ar_off is the logical block number.
+ * For APREF_KIND_DBLK, ar_off is the DEV_BSIZE block number on the
+ * device, and ar_ino the identity of the file system, which newfs(8)
+ * changes (FFS fs_id).  Metadata entries have the block size in ar_size
+ * and the pages it covers in ar_npages.
  */
 struct aprefetch_rec {
 	uint64_t	ar_fsid;	/* file system, APREFETCH_FSID() */
@@ -61,11 +78,12 @@ struct aprefetch_rec {
 	uint32_t	ar_npages;	/* length in pages */
 	uint32_t	ar_pid;		/* process that read */
 	uint32_t	ar_msec;	/* msec since the window opened */
-	uint32_t	ar_flags;	/* APREF_REC_* */
-	uint32_t	ar_pad;
+	uint32_t	ar_flags;	/* APREF_REC_*, APREF_KIND_* */
+	uint32_t	ar_size;	/* metadata: block size in bytes */
 };
 
-#define	APREF_REC_MISS	0x00000001	/* a page was not resident */
+#define	APREF_REC_MISS	0x00000001	/* the data was not in memory */
+#define	APREF_REC_KIND(flags)	((flags) & 0x30)
 
 /*
  * Mark: a timestamped label written with write(2), or by the kernel.
@@ -84,9 +102,10 @@ struct aprefetch_mark {
  * Profile file: a header followed by ph_nentries entries, in the order
  * in which the data was first read.  ph_crc is the crc32 (as in zlib)
  * of the header with ph_crc set to zero, followed by the entries.
+ * Version 1 had file data only, in entries without pe_kind and pe_size.
  */
 #define	APREF_PROF_MAGIC	0x46525041	/* "APRF" */
-#define	APREF_PROF_VERSION	1
+#define	APREF_PROF_VERSION	2
 #define	APREF_PROF_MAXFS	8
 #define	APREF_PROF_MAXSIZE	(16 * 1024 * 1024)
 
@@ -101,20 +120,24 @@ struct aprefetch_prof_hdr {
 	uint64_t	ph_fsid[APREF_PROF_MAXFS];
 };
 
+/* The fields are those of struct aprefetch_rec. */
 struct aprefetch_prof_ent {
 	uint64_t	pe_fsid;
 	uint64_t	pe_ino;
-	uint64_t	pe_off;		/* offset in the file, page aligned */
+	uint64_t	pe_off;
 	uint32_t	pe_gen;
 	uint32_t	pe_npages;
+	uint32_t	pe_kind;	/* APREF_KIND_* */
+	uint32_t	pe_size;
 };
 
 /*
  * Trace file, written by aprefd(8): a header followed by th_nrecs
- * access entries as read from the device.
+ * access entries as read from the device.  Version 1 traces have file
+ * data only and read as version 2.
  */
 #define	APREF_TRACE_MAGIC	0x52545041	/* "APTR" */
-#define	APREF_TRACE_VERSION	1
+#define	APREF_TRACE_VERSION	2
 
 struct aprefetch_trace_hdr {
 	uint32_t	th_magic;
@@ -150,8 +173,8 @@ struct aprefetch_status {
 struct aprefetch_stats {
 	uint64_t	st_records;	/* access entries recorded */
 	uint64_t	st_dropped;	/* entries dropped, ring full */
-	uint64_t	st_hits;	/* recorded reads served from memory */
-	uint64_t	st_misses;	/* recorded reads that were not */
+	uint64_t	st_hits;	/* recorded data reads served from memory */
+	uint64_t	st_misses;	/* recorded data reads that were not */
 	uint64_t	st_replays;	/* replays started */
 	uint64_t	st_entries;	/* profile entries taken */
 	uint64_t	st_stale;	/* entries dropped: gone, regenerated, shrunk */
@@ -163,6 +186,10 @@ struct aprefetch_stats {
 	uint64_t	st_aborts;	/* replays stopped early */
 	uint32_t	st_last_end;	/* APREF_END_* of the last replay */
 	uint32_t	st_last_msec;	/* duration of the last replay */
+	uint64_t	st_meta_hits;	/* recorded metadata reads from memory */
+	uint64_t	st_meta_misses;	/* recorded metadata reads that were not */
+	uint64_t	st_meta_ios;	/* metadata blocks read ahead */
+	uint64_t	st_meta_cached;	/* metadata blocks skipped: in memory */
 };
 
 struct aprefetch_marks {
@@ -208,12 +235,16 @@ struct aprefetch_replay {
 #define	APREFIOC_REPLAY		_IOW('y', 7, struct aprefetch_replay)
 
 #ifdef _KERNEL
+struct buf;
 struct mount;
 struct vnode;
 
 extern int	aprefetch_recording;
 
 void	aprefetch_getpages(struct vnode *, off_t, int, int, int, bool, bool);
+void	aprefetch_bread(struct vnode *, daddr_t, int, bool);
+bool	aprefetch_bio_read(struct vnode *, daddr_t, int,	/* vfs_bio.c */
+	    void (*)(struct buf *));
 void	aprefetch_boot(void);
 void	aprefetch_kmark(const char *);
 void	aprefetch_mount(struct mount *);

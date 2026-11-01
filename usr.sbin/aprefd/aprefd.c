@@ -58,6 +58,7 @@ __RCSID("$NetBSD$");
 
 #define	MAXKEEP		9		/* traces kept at most */
 #define	MAXPAGES	(1024 * 1024)	/* distinct pages in a profile */
+#define	MAXBLOCKS	(256 * 1024)	/* distinct metadata blocks */
 
 /* A page seen in the traces. */
 struct page {
@@ -71,28 +72,50 @@ struct page {
 	bool		pg_used;
 };
 
+/* A metadata block seen in the traces; the rest is as for a page. */
+struct mblk {
+	uint64_t	mb_fsid;
+	uint64_t	mb_ino;
+	uint64_t	mb_off;		/* block number */
+	uint32_t	mb_gen;
+	uint32_t	mb_kind;	/* APREF_KIND_* */
+	uint32_t	mb_size;	/* in the newest trace that has it */
+	uint32_t	mb_msec;
+	uint8_t		mb_count;
+	int8_t		mb_last;
+	bool		mb_used;
+};
+
 struct fscount {
 	uint64_t	fs_fsid;
 	uint64_t	fs_pages;
 };
 
-/* A run of pages of one file, read together. */
+/* A profile entry to be: a run of pages of one file, or a metadata block. */
 struct run {
 	uint64_t	r_fsid;
 	uint64_t	r_ino;
+	uint64_t	r_off;		/* first page, or block number */
 	uint32_t	r_gen;
-	uint32_t	r_pgno;
 	uint32_t	r_npages;
 	uint32_t	r_msec;
+	uint32_t	r_kind;
+	uint32_t	r_size;
 };
 
 static bool		dflag;
+static bool		Mflag;		/* no metadata in the profile */
 static volatile sig_atomic_t quit;
 
 static struct page	*table;
 static size_t		tablemask;
 static size_t		npages;
 static bool		full;
+
+static struct mblk	*mtable;
+static size_t		mtablemask;
+static size_t		nblocks;
+static bool		mfull;
 
 __dead static void	usage(void);
 static void		logmsg(int, const char *, ...) __printflike(2, 3);
@@ -247,6 +270,62 @@ addpage(int t, uint64_t fsid, uint64_t ino, uint32_t gen, uint32_t pgno,
 	npages++;
 }
 
+static size_t
+blockhash(uint32_t kind, uint64_t fsid, uint64_t ino, uint32_t gen,
+    uint64_t off)
+{
+	uint64_t x;
+
+	x = (ino ^ ((uint64_t)gen << 32) ^ (fsid * 0x9e3779b97f4a7c15ULL) ^
+	    kind) * 0xff51afd7ed558ccdULL;
+	x ^= off * 0xc4ceb9fe1a85ec53ULL;
+	x ^= x >> 33;
+	return (size_t)x & mtablemask;
+}
+
+/* Count a metadata block read in trace t, as addpage() does. */
+static void
+addblock(int t, const struct aprefetch_rec *r)
+{
+	const uint32_t kind = APREF_REC_KIND(r->ar_flags);
+	struct mblk *mb;
+	size_t h;
+
+	for (h = blockhash(kind, r->ar_fsid, r->ar_ino, r->ar_gen, r->ar_off);;
+	    h = (h + 1) & mtablemask) {
+		mb = &mtable[h];
+		if (!mb->mb_used)
+			break;
+		if (mb->mb_kind == kind && mb->mb_fsid == r->ar_fsid &&
+		    mb->mb_ino == r->ar_ino && mb->mb_gen == r->ar_gen &&
+		    mb->mb_off == r->ar_off) {
+			if (mb->mb_last != t) {
+				mb->mb_last = (int8_t)t;
+				mb->mb_count++;
+			} else if (mb->mb_count == 1 &&
+			    r->ar_msec < mb->mb_msec) {
+				mb->mb_msec = r->ar_msec;
+			}
+			return;
+		}
+	}
+	if (nblocks >= MAXBLOCKS) {
+		mfull = true;
+		return;
+	}
+	mb->mb_used = true;
+	mb->mb_fsid = r->ar_fsid;
+	mb->mb_ino = r->ar_ino;
+	mb->mb_off = r->ar_off;
+	mb->mb_gen = r->ar_gen;
+	mb->mb_kind = kind;
+	mb->mb_size = r->ar_size;
+	mb->mb_msec = r->ar_msec;
+	mb->mb_count = 1;
+	mb->mb_last = (int8_t)t;
+	nblocks++;
+}
+
 static int
 page_cmp(const void *a, const void *b)
 {
@@ -270,11 +349,13 @@ run_cmp(const void *a, const void *b)
 
 	if (r->r_msec != s->r_msec)
 		return r->r_msec < s->r_msec ? -1 : 1;
+	if (r->r_kind != s->r_kind)
+		return r->r_kind < s->r_kind ? -1 : 1;
 	if (r->r_fsid != s->r_fsid)
 		return r->r_fsid < s->r_fsid ? -1 : 1;
 	if (r->r_ino != s->r_ino)
 		return r->r_ino < s->r_ino ? -1 : 1;
-	return r->r_pgno < s->r_pgno ? -1 : r->r_pgno > s->r_pgno;
+	return r->r_off < s->r_off ? -1 : r->r_off > s->r_off;
 }
 
 static int
@@ -285,10 +366,25 @@ fs_cmp(const void *a, const void *b)
 	return f->fs_pages > g->fs_pages ? -1 : f->fs_pages < g->fs_pages;
 }
 
+/* A hash table with room for twice want slots, a power of two. */
+static void *
+newtable(size_t want, size_t size, size_t *maskp)
+{
+	size_t n;
+	void *p;
+
+	for (n = 1024; n < 2 * want; n <<= 1)
+		continue;
+	if ((p = calloc(n, size)) == NULL)
+		return NULL;
+	*maskp = n - 1;
+	return p;
+}
+
 /*
  * Rebuild the boot profile from the newest keep traces: keep the pages
- * read in at least min of them, in the order in which the newest trace
- * that has them read them first.
+ * and metadata blocks read in at least min of them, in the order in
+ * which the newest trace that has them read them first.
  */
 static int
 buildprof(int keep, int min)
@@ -296,12 +392,13 @@ buildprof(int keep, int min)
 	struct aprefio_trace tr;
 	struct aprefetch_prof_ent *pe;
 	struct page *pg;
-	struct run *runs;
+	struct mblk *mb;
+	struct run *runs, *r;
 	struct fscount fsc[64];
 	char path[PATH_MAX];
 	uint64_t fsid[APREF_PROF_MAXFS];
-	uint64_t total = 0;
-	size_t i, j, n, nruns, nent, maxent, nfsc = 0;
+	uint64_t total = 0, mtotal = 0;
+	size_t i, j, n, nmeta, nruns, nent, maxent, nfsc = 0, nmetaent = 0;
 	uint32_t k, p;
 	int t, ntraces = 0, need, nfs = 0, error;
 	const long pgsz = sysconf(_SC_PAGESIZE);
@@ -310,23 +407,29 @@ buildprof(int keep, int min)
 	for (pgshift = 0; (1L << pgshift) < pgsz; pgshift++)
 		continue;
 
-	/* Size the table for the newest trace, with room for the others. */
+	/* Size the tables for the newest trace, with room for the others. */
 	for (t = 0; t < keep; t++) {
 		tracename(path, sizeof(path), t);
 		if (aprefio_load_trace(path, &tr) == -1)
 			continue;
-		for (k = 0; k < tr.t_hdr.th_nrecs; k++)
-			total += tr.t_recs[k].ar_npages;
+		for (k = 0; k < tr.t_hdr.th_nrecs; k++) {
+			if (APREF_REC_KIND(tr.t_recs[k].ar_flags) ==
+			    APREF_KIND_DATA)
+				total += tr.t_recs[k].ar_npages;
+			else
+				mtotal++;
+		}
 		aprefio_free_trace(&tr);
 	}
-	total = MIN(total, MAXPAGES);
-	for (tablemask = 1024; tablemask < 2 * total; tablemask <<= 1)
-		continue;
-	if ((table = calloc(tablemask, sizeof(*table))) == NULL) {
+	table = newtable(MIN(total, MAXPAGES), sizeof(*table), &tablemask);
+	mtable = newtable(MIN(mtotal, MAXBLOCKS), sizeof(*mtable),
+	    &mtablemask);
+	if (table == NULL || mtable == NULL) {
 		logmsg(LOG_ERR, "out of memory");
+		free(table);
+		free(mtable);
 		return -1;
 	}
-	tablemask--;
 
 	for (t = 0; t < keep; t++) {
 		tracename(path, sizeof(path), t);
@@ -338,57 +441,91 @@ buildprof(int keep, int min)
 		}
 		ntraces++;
 		for (k = 0; k < tr.t_hdr.th_nrecs; k++) {
-			const struct aprefetch_rec * const r = &tr.t_recs[k];
-			const uint64_t first = r->ar_off >> pgshift;
+			const struct aprefetch_rec * const rec = &tr.t_recs[k];
+			uint64_t first;
 
-			if (first + r->ar_npages > UINT32_MAX)
+			if (APREF_REC_KIND(rec->ar_flags) != APREF_KIND_DATA) {
+				if (!Mflag && rec->ar_size != 0 &&
+				    rec->ar_size <= MAXBSIZE)
+					addblock(t, rec);
 				continue;
-			for (p = 0; p < r->ar_npages; p++)
-				addpage(t, r->ar_fsid, r->ar_ino, r->ar_gen,
-				    (uint32_t)(first + p), r->ar_msec);
+			}
+			first = rec->ar_off >> pgshift;
+			if (first + rec->ar_npages > UINT32_MAX)
+				continue;
+			for (p = 0; p < rec->ar_npages; p++)
+				addpage(t, rec->ar_fsid, rec->ar_ino,
+				    rec->ar_gen, (uint32_t)(first + p),
+				    rec->ar_msec);
 		}
 		aprefio_free_trace(&tr);
 	}
 	if (full)
 		logmsg(LOG_WARNING, "more than %d distinct pages; ignored "
 		    "the rest", MAXPAGES);
+	if (mfull)
+		logmsg(LOG_WARNING, "more than %d distinct metadata blocks; "
+		    "ignored the rest", MAXBLOCKS);
 	need = MIN(min, ntraces);
 
-	/* The pages read often enough, grouped into runs per file. */
+	/* The pages and blocks read often enough. */
 	for (i = j = 0; i <= tablemask; i++) {
 		if (table[i].pg_used && table[i].pg_count >= need)
 			table[j++] = table[i];
 	}
 	n = j;
 	qsort(table, n, sizeof(*table), page_cmp);
-	if ((runs = calloc(MAX(n, 1), sizeof(*runs))) == NULL) {
+	for (i = j = 0; i <= mtablemask; i++) {
+		if (mtable[i].mb_used && mtable[i].mb_count >= need)
+			mtable[j++] = mtable[i];
+	}
+	nmeta = j;
+	if ((runs = calloc(MAX(n + nmeta, 1), sizeof(*runs))) == NULL) {
 		logmsg(LOG_ERR, "out of memory");
 		free(table);
+		free(mtable);
 		return -1;
 	}
+
+	/* Pages grouped into runs per file, and the blocks as they are. */
 	for (i = 0, nruns = 0; i < n; i++) {
 		pg = &table[i];
 		if (nruns > 0) {
-			struct run * const r = &runs[nruns - 1];
-
+			r = &runs[nruns - 1];
 			if (r->r_fsid == pg->pg_fsid && r->r_ino == pg->pg_ino &&
 			    r->r_gen == pg->pg_gen &&
-			    r->r_pgno + r->r_npages == pg->pg_pgno) {
+			    r->r_off + r->r_npages == pg->pg_pgno) {
 				r->r_npages++;
 				r->r_msec = MIN(r->r_msec, pg->pg_msec);
 				continue;
 			}
 		}
-		runs[nruns].r_fsid = pg->pg_fsid;
-		runs[nruns].r_ino = pg->pg_ino;
-		runs[nruns].r_gen = pg->pg_gen;
-		runs[nruns].r_pgno = pg->pg_pgno;
-		runs[nruns].r_npages = 1;
-		runs[nruns].r_msec = pg->pg_msec;
-		nruns++;
+		r = &runs[nruns++];
+		r->r_fsid = pg->pg_fsid;
+		r->r_ino = pg->pg_ino;
+		r->r_gen = pg->pg_gen;
+		r->r_off = pg->pg_pgno;
+		r->r_npages = 1;
+		r->r_msec = pg->pg_msec;
+		r->r_kind = APREF_KIND_DATA;
+		r->r_size = 0;
+	}
+	for (i = 0; i < nmeta; i++) {
+		mb = &mtable[i];
+		r = &runs[nruns++];
+		r->r_fsid = mb->mb_fsid;
+		r->r_ino = mb->mb_ino;
+		r->r_gen = mb->mb_gen;
+		r->r_off = mb->mb_off;
+		r->r_npages = (uint32_t)howmany(mb->mb_size, (uint32_t)pgsz);
+		r->r_msec = mb->mb_msec;
+		r->r_kind = mb->mb_kind;
+		r->r_size = mb->mb_size;
 	}
 	free(table);
 	table = NULL;
+	free(mtable);
+	mtable = NULL;
 	qsort(runs, nruns, sizeof(*runs), run_cmp);
 
 	/* At most APREF_PROF_MAXFS file systems, those with the most pages. */
@@ -418,16 +555,22 @@ buildprof(int keep, int min)
 		return -1;
 	}
 	for (i = nent = 0; i < nruns && nent < maxent; i++) {
+		r = &runs[i];
 		for (j = 0; j < (size_t)nfs; j++)
-			if (fsid[j] == runs[i].r_fsid)
+			if (fsid[j] == r->r_fsid)
 				break;
 		if (j == (size_t)nfs)
 			continue;
-		pe[nent].pe_fsid = runs[i].r_fsid;
-		pe[nent].pe_ino = runs[i].r_ino;
-		pe[nent].pe_gen = runs[i].r_gen;
-		pe[nent].pe_off = (uint64_t)runs[i].r_pgno << pgshift;
-		pe[nent].pe_npages = runs[i].r_npages;
+		pe[nent].pe_fsid = r->r_fsid;
+		pe[nent].pe_ino = r->r_ino;
+		pe[nent].pe_gen = r->r_gen;
+		pe[nent].pe_off = r->r_kind == APREF_KIND_DATA ?
+		    r->r_off << pgshift : r->r_off;
+		pe[nent].pe_npages = r->r_npages;
+		pe[nent].pe_kind = r->r_kind;
+		pe[nent].pe_size = r->r_size;
+		if (r->r_kind != APREF_KIND_DATA)
+			nmetaent++;
 		nent++;
 	}
 	free(runs);
@@ -437,8 +580,8 @@ buildprof(int keep, int min)
 	if (error == -1)
 		logmsg(LOG_ERR, "%s: %s", APREFETCH_BOOTPROF, strerror(errno));
 	else
-		logmsg(LOG_INFO, "%s: %zu entries from %d traces",
-		    APREFETCH_BOOTPROF, nent, ntraces);
+		logmsg(LOG_INFO, "%s: %zu entries, %zu of metadata, from %d "
+		    "traces", APREFETCH_BOOTPROF, nent, nmetaent, ntraces);
 	free(pe);
 	return error;
 }
@@ -458,7 +601,7 @@ __dead static void
 usage(void)
 {
 
-	(void)fprintf(stderr, "usage: %s [-dn] [-k keep] [-m min]\n",
+	(void)fprintf(stderr, "usage: %s [-dMn] [-k keep] [-m min]\n",
 	    getprogname());
 	exit(1);
 }
@@ -472,7 +615,7 @@ main(int argc, char **argv)
 	bool nflag = false;
 	int ch, fd, keep = 3, min = 2, e;
 
-	while ((ch = getopt(argc, argv, "dk:m:n")) != -1) {
+	while ((ch = getopt(argc, argv, "dk:Mm:n")) != -1) {
 		switch (ch) {
 		case 'd':
 			dflag = true;
@@ -488,6 +631,9 @@ main(int argc, char **argv)
 			if (e)
 				errx(1, "-m: number of traces from 1 to %d",
 				    MAXKEEP);
+			break;
+		case 'M':
+			Mflag = true;
 			break;
 		case 'n':
 			nflag = true;

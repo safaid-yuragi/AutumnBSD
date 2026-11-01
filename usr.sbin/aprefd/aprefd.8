@@ -24,7 +24,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd October 31, 2026
+.Dd November 1, 2026
 .Dt APREFD 8
 .Os
 .Sh NAME
@@ -32,7 +32,7 @@
 .Nd collect boot-time file reads and update the boot profile
 .Sh SYNOPSIS
 .Nm
-.Op Fl dn
+.Op Fl dMn
 .Op Fl k Ar keep
 .Op Fl m Ar min
 .Sh DESCRIPTION
@@ -50,15 +50,17 @@ and so on, and rebuilds the boot profile
 .Pa /etc/aprefetch/boot.prof
 from the newest traces, and exits.
 .Pp
-The profile keeps the pages that were read in at least
+The profile keeps the pages, and the metadata blocks, that were read in at
+least
 .Ar min
 of the newest
 .Ar keep
 traces, or in all of them while there are fewer, so that work done in only
 one boot does not make the profile grow.
-The pages are grouped into ranges of a file and ordered by the time at
-which the newest trace that has them read them first, so that when the
-budget of the replay runs out, what was read early is kept.
+The pages are grouped into ranges of a file, and the ranges and the blocks
+are ordered by the time at which the newest trace that has them read them
+first, so that when the budget of the replay runs out, what was read early
+is kept.
 The profile is limited to 16 MB and to the eight file systems with the most
 pages.
 .Pp
@@ -74,6 +76,10 @@ Stay in the foreground and report to the standard error instead of
 Keep and use this many traces, from 1 to 9; 3 by default.
 .It Fl m Ar min
 A page must be in this many traces; 2 by default.
+.It Fl M
+Leave the metadata blocks out of the profile, so that the replay reads
+file data only.
+This is to measure what prefetching metadata gains.
 .It Fl n
 Save the trace but leave the profile alone.
 With no profile, this records without prefetching.
