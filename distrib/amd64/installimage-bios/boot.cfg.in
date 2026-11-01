@@ -1,9 +1,16 @@
-banner=Welcome to the NetBSD/@@MACHINE@@ @@VERSION@@ installation image
-banner================================================================================
-banner=
+banner=\.    .      .
+banner= `\. /@\  .@@'
+banner=   `\@@@\@@'          _         _                           ____  ____  ____
+banner=._@@@@@@@@@@@=-.     / \  _   _| |_ _   _ _ __ ___  _ __   | __ )/ ___||  _ \
+banner=  .@@@@\@@.         / _ \| | | | __| | | | '_ ` _ \| '_ \  |  _ \\___ \| | | |
+banner= .@@' @@@ `@@.     / ___ \ |_| | |_| |_| | | | | | | | | | | |_) |___) | |_| |
+banner=/'    @@@   `\@.  /_/   \_\__,_|\__|\__,_|_| |_| |_|_| |_| |____/|____/|____/
+banner=      `@'      `
+banner=       '
+banner=Welcome to the AutumnBSD installation image (NetBSD/@@MACHINE@@ @@VERSION@@)
 banner=If you encounter a problem while booting, report a bug at
 banner=https://www.NetBSD.org/.
-menu=Install NetBSD:boot netbsd
+menu=Install AutumnBSD:boot netbsd
 menu=Drop to boot prompt:prompt
 timeout=30
 clear=1

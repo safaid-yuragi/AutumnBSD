@@ -200,6 +200,7 @@
 ./etc/rc.d/altqd		type=file mode=0555
 ./etc/rc.d/amd			type=file mode=0555
 ./etc/rc.d/apmd			type=file mode=0555
+./etc/rc.d/aprefd		type=file mode=0555
 ./etc/rc.d/bluetooth		type=file mode=0555
 ./etc/rc.d/bootconf.sh		type=file mode=0555
 ./etc/rc.d/bootparams		type=file mode=0555

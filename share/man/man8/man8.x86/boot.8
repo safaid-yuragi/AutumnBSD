@@ -32,7 +32,7 @@
 .\"
 .\"     @(#)boot_i386.8	8.2 (Berkeley) 4/19/94
 .\"
-.Dd October 9, 2025
+.Dd October 31, 2026
 .Dt BOOT 8 x86
 .Os
 .Sh NAME
@@ -313,7 +313,9 @@ in
 .Va boothowto .
 In
 .Nx Ns /x86 ,
-this has no effect.
+this turns off the recording and prefetch of boot-time file reads
+for this boot; see
+.Xr aprefetch 4 .
 .It Fl a
 Sets the
 .Dv RB_ASKNAME

@@ -1698,6 +1698,7 @@ options 	RND_COM			# use "com" randomness as well (BROKEN)
 pseudo-device	clockctl		# user control of clock subsystem
 pseudo-device	ksyms			# /dev/ksyms
 pseudo-device	lockstat		# lock profiling
+pseudo-device	aprefetch		# boot-time file prefetch
 pseudo-device	bcsp			# BlueCore Serial Protocol
 pseudo-device	btuart			# Bluetooth HCI UART (H4)
 pseudo-device	gpiosim		1	# GPIO simulator

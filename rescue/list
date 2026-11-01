@@ -131,4 +131,4 @@ PROG	tetris
 SRCDIRS	libexec
 
 LIBS	liboverride.o
-LIBS	-lbz2 -llzma -lcrypt -ledit -lkvm -ll -lm -lrmt -lcurses -lterminfo -lutil -lz -levent -lprop
+LIBS	-lbz2 -llzma -lcrypt -ledit -lkvm -ll -lm -lrmt -lmenu -lcurses -lterminfo -lutil -lz -levent -lprop

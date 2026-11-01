@@ -1,0 +1,165 @@
+.\"	$NetBSD$
+.\"
+.\" Copyright (c) 2026 yuragi
+.\" All rights reserved.
+.\"
+.\" Redistribution and use in source and binary forms, with or without
+.\" modification, are permitted provided that the following conditions
+.\" are met:
+.\" 1. Redistributions of source code must retain the above copyright
+.\"    notice, this list of conditions and the following disclaimer.
+.\" 2. Redistributions in binary form must reproduce the above copyright
+.\"    notice, this list of conditions and the following disclaimer in the
+.\"    documentation and/or other materials provided with the distribution.
+.\"
+.\" THIS SOFTWARE IS PROVIDED BY THE AUTHOR AND CONTRIBUTORS ``AS IS'' AND
+.\" ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+.\" IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+.\" ARE DISCLAIMED.  IN NO EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE
+.\" FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+.\" DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+.\" OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+.\" HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
+.\" LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY
+.\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
+.\" SUCH DAMAGE.
+.\"
+.Dd October 31, 2026
+.Dt APREFCTL 8
+.Os
+.Sh NAME
+.Nm aprefctl
+.Nd control boot-time file prefetch and look at its records
+.Sh SYNOPSIS
+.Nm
+.Cm status
+.Nm
+.Cm record Cm start | stop
+.Nm
+.Cm boot-done
+.Nm
+.Cm mark
+.Ar label ...
+.Nm
+.Cm marks
+.Op Fl s
+.Nm
+.Cm list
+.Nm
+.Cm dump
+.Ar profile
+.Nm
+.Cm delete
+.Ar profile
+.Nm
+.Cm trace
+.Op Ar file
+.Nm
+.Cm scatter
+.Op Fl a
+.Op Fl c Ar csvfile
+.Op Fl s Ar svgfile
+.Op Ar file
+.Nm
+.Cm replay
+.Op Fl b Ar bytes
+.Ar profile
+.Sh DESCRIPTION
+.Nm
+controls
+.Xr aprefetch 4
+and shows what it recorded.
+A
+.Ar profile
+is a path, or
+.Cm boot
+for
+.Pa /etc/aprefetch/boot.prof .
+A trace
+.Ar file
+is
+.Pa /var/db/aprefetch/boot.trace
+unless given.
+.Pp
+The commands are:
+.Bl -tag -width indent
+.It Cm status
+Show the settings, whether a recording window is open and a replay is
+running, and the statistics.
+.It Cm record Cm start | stop
+Open or close a recording window by hand.
+.It Cm boot-done
+Close the boot recording window.
+It is run at each login through
+.Xr pam_exec 8
+from
+.Pa /etc/pam.d/login ,
+does nothing when the window is closed already, and says nothing when
+.Pa /dev/aprefetch
+does not exist.
+A display manager should run it when someone has logged in.
+.It Cm mark Ar label ...
+Add a mark.
+.It Cm marks Op Fl s
+Show the marks with the time since boot, the time since the previous
+mark, and the disk reads in between, followed by a summary: the time
+from boot to the root mount, the time and reads from the start of init to
+the end of
+.Pa /etc/rc ,
+and the slowest
+.Xr rc.d 8
+scripts.
+With
+.Fl s ,
+show the summary only.
+.It Cm list
+List the profiles and the traces.
+.It Cm dump Ar profile
+Show the header and the entries of a profile.
+.It Cm delete Ar profile
+Remove a profile.
+.It Cm trace Op Ar file
+Show the entries of a trace in time order.
+.It Cm scatter Oo Fl a Oc Oo Fl c Ar csvfile Oc Oo Fl s Ar svgfile Oc Op Ar file
+Map the entries of a trace that missed the page cache, or all entries with
+.Fl a ,
+to disk blocks, and show how scattered the reads were: the number of jumps
+between consecutive pieces on the same disk and their average size, once
+in the order of the reads and once in the order of the disk, followed by a
+plot of disk position against time.
+.Fl c
+also writes the pieces to
+.Ar csvfile
+and
+.Fl s
+draws the plot into
+.Ar svgfile .
+Entries whose file is gone or has changed are counted but not mapped.
+.It Cm replay Oo Fl b Ar bytes Oc Ar profile
+Replay a profile now, reading at most
+.Ar bytes ,
+which may end in k, m or g, or
+.Va kern.aprefetch.app_budget .
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh EXAMPLES
+Show how long the kernel and userland parts of the last boot took, and
+which
+.Xr rc.d 8
+scripts were the slowest:
+.Bd -literal -offset indent
+# aprefctl marks -s
+.Ed
+.Pp
+See how scattered the reads of the last boot were, and draw them:
+.Bd -literal -offset indent
+# aprefctl scatter -s /tmp/boot.svg
+.Ed
+.Sh SEE ALSO
+.Xr aprefetch 4 ,
+.Xr aprefd 8 ,
+.Xr pam_exec 8
+.Sh HISTORY
+.Nm
+was written for AutumnBSD.

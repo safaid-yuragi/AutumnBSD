@@ -1074,6 +1074,8 @@
 ./usr/libdata/debug/usr/sbin/amd.debug		comp-amd-debug		debug
 ./usr/libdata/debug/usr/sbin/amldb.debug	comp-sysutil-debug	acpi,debug
 ./usr/libdata/debug/usr/sbin/amq.debug		comp-amd-debug		debug
+./usr/libdata/debug/usr/sbin/aprefctl.debug	comp-sysutil-debug	debug
+./usr/libdata/debug/usr/sbin/aprefd.debug	comp-sysutil-debug	debug
 ./usr/libdata/debug/usr/sbin/arp.debug		comp-netutil-debug	debug
 ./usr/libdata/debug/usr/sbin/audit-packages.debug	comp-obsolete		obsolete
 ./usr/libdata/debug/usr/sbin/authpf.debug	comp-pf-debug		pf,debug
