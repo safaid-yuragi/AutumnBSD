@@ -34,6 +34,7 @@ __RCSID("$NetBSD$");
 #include <sys/param.h>
 #include <sys/ioctl.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/sysctl.h>
 
 #include <err.h>
@@ -93,11 +94,11 @@ static const struct cmd cmds[] = {
 	{ "mark",	cmd_mark,	"label ..." },
 	{ "marks",	cmd_marks,	"[-s]" },
 	{ "list",	cmd_list,	"" },
-	{ "dump",	cmd_dump,	"profile" },
-	{ "delete",	cmd_delete,	"profile" },
+	{ "dump",	cmd_dump,	"boot | file" },
+	{ "delete",	cmd_delete,	"boot | file" },
 	{ "trace",	cmd_trace,	"[file]" },
 	{ "scatter",	cmd_scatter,	"[-a] [-c csvfile] [-s svgfile] [file]" },
-	{ "replay",	cmd_replay,	"[-b bytes] profile" },
+	{ "replay",	cmd_replay,	"[-b bytes] boot | file" },
 };
 
 static long	pagesize;
@@ -172,6 +173,22 @@ timestr(uint64_t t)
 	return buf;
 }
 
+static const char *
+kindname(uint32_t kind)
+{
+
+	switch (kind) {
+	case APREF_KIND_DATA:
+		return "data";
+	case APREF_KIND_VBLK:
+		return "dir";
+	case APREF_KIND_DBLK:
+		return "dev";
+	default:
+		return "?";
+	}
+}
+
 static int
 cmd_status(int argc, char **argv)
 {
@@ -218,6 +235,10 @@ cmd_status(int argc, char **argv)
 	    "(%.1f MB); %" PRIu64 " pages already in memory, "
 	    "%" PRIu64 " lost to errors\n", st.st_ios, st.st_pages,
 	    MB(st.st_pages * (uint64_t)pagesize), st.st_cached, st.st_errors);
+	printf("metadata:    %" PRIu64 " reads from memory, %" PRIu64 " not; "
+	    "%" PRIu64 " blocks read ahead, %" PRIu64 " in memory already\n",
+	    st.st_meta_hits, st.st_meta_misses, st.st_meta_ios,
+	    st.st_meta_cached);
 	printf("aborted:     %" PRIu64 "\n", st.st_aborts);
 	return 0;
 }
@@ -423,14 +444,18 @@ static void
 listprof(const char *path)
 {
 	struct aprefio_prof p;
+	uint32_t i, nmeta;
 
 	if (aprefio_load_prof(path, &p) == -1) {
 		printf("%-34s %s\n", path, strerror(errno));
 		return;
 	}
-	printf("%-34s %s %8" PRIu32 " entries %8" PRIu32 " pages %8.1f MB\n",
-	    path, timestr(p.p_hdr.ph_ctime), p.p_hdr.ph_nentries,
-	    p.p_hdr.ph_npages, MB((uint64_t)p.p_hdr.ph_npages * pagesize));
+	for (i = 0, nmeta = 0; i < p.p_hdr.ph_nentries; i++)
+		nmeta += p.p_ents[i].pe_kind != APREF_KIND_DATA;
+	printf("%-34s %s %8" PRIu32 " entries (%" PRIu32 " metadata) %8"
+	    PRIu32 " pages %8.1f MB\n", path, timestr(p.p_hdr.ph_ctime),
+	    p.p_hdr.ph_nentries, nmeta, p.p_hdr.ph_npages,
+	    MB((uint64_t)p.p_hdr.ph_npages * pagesize));
 	aprefio_free_prof(&p);
 }
 
@@ -496,14 +521,23 @@ cmd_dump(int argc, char **argv)
 	    MB((uint64_t)p.p_hdr.ph_npages * pagesize));
 	for (i = 0; i < p.p_hdr.ph_nfs; i++)
 		printf("file system %#018" PRIx64 "\n", p.p_hdr.ph_fsid[i]);
-	printf("%-18s %10s %10s %14s %8s\n", "fsid", "inode", "generation",
-	    "offset", "pages");
+	printf("%-18s %-4s %10s %10s %14s %8s %6s\n", "fsid", "kind", "inode",
+	    "generation", "offset/block", "pages", "size");
 	for (i = 0; i < p.p_hdr.ph_nentries; i++) {
 		const struct aprefetch_prof_ent * const e = &p.p_ents[i];
 
-		printf("%#018" PRIx64 " %10" PRIu64 " %10" PRIu32 " %14" PRIu64
-		    " %8" PRIu32 "\n", e->pe_fsid, e->pe_ino, e->pe_gen,
-		    e->pe_off, e->pe_npages);
+		printf("%#018" PRIx64 " %-4s ", e->pe_fsid,
+		    kindname(e->pe_kind));
+		if (e->pe_kind == APREF_KIND_DBLK)
+			printf("%10s %10s", "-", "-");
+		else
+			printf("%10" PRIu64 " %10" PRIu32, e->pe_ino,
+			    e->pe_gen);
+		printf(" %14" PRIu64 " %8" PRIu32, e->pe_off, e->pe_npages);
+		if (e->pe_kind == APREF_KIND_DATA)
+			printf(" %6s\n", "-");
+		else
+			printf(" %6" PRIu32 "\n", e->pe_size);
 	}
 	aprefio_free_prof(&p);
 	return 0;
@@ -555,16 +589,26 @@ cmd_trace(int argc, char **argv)
 	printf("%s: saved %s, %" PRIu32 " entries, %" PRIu64 " dropped\n",
 	    path, timestr(t.t_hdr.th_ctime), t.t_hdr.th_nrecs,
 	    t.t_hdr.th_dropped);
-	printf("%8s %6s %-18s %10s %10s %14s %8s %s\n", "msec", "pid", "fsid",
-	    "inode", "generation", "offset", "pages", "flags");
+	printf("%8s %6s %-18s %-4s %10s %10s %14s %8s %6s %s\n", "msec",
+	    "pid", "fsid", "kind", "inode", "generation", "offset/block",
+	    "pages", "size", "flags");
 	for (i = 0; i < t.t_hdr.th_nrecs; i++) {
 		const struct aprefetch_rec * const r = &t.t_recs[i];
+		const uint32_t kind = APREF_REC_KIND(r->ar_flags);
 
-		printf("%8" PRIu32 " %6" PRIu32 " %#018" PRIx64 " %10" PRIu64
-		    " %10" PRIu32 " %14" PRIu64 " %8" PRIu32 " %s\n",
-		    r->ar_msec, r->ar_pid, r->ar_fsid, r->ar_ino, r->ar_gen,
-		    r->ar_off, r->ar_npages,
-		    (r->ar_flags & APREF_REC_MISS) ? "miss" : "-");
+		printf("%8" PRIu32 " %6" PRIu32 " %#018" PRIx64 " %-4s ",
+		    r->ar_msec, r->ar_pid, r->ar_fsid, kindname(kind));
+		if (kind == APREF_KIND_DBLK)
+			printf("%10s %10s", "-", "-");
+		else
+			printf("%10" PRIu64 " %10" PRIu32, r->ar_ino,
+			    r->ar_gen);
+		printf(" %14" PRIu64 " %8" PRIu32, r->ar_off, r->ar_npages);
+		if (kind == APREF_KIND_DATA)
+			printf(" %6s", "-");
+		else
+			printf(" %6" PRIu32, r->ar_size);
+		printf(" %s\n", (r->ar_flags & APREF_REC_MISS) ? "miss" : "-");
 	}
 	aprefio_free_trace(&t);
 	return 0;
@@ -644,12 +688,14 @@ writecsv(const char *path, const struct point *pt, size_t n)
 
 	if ((f = fopen(path, "w")) == NULL)
 		err(1, "%s", path);
-	fprintf(f, "msec,dev,blkno,blocks,ino,offset,pages,miss\n");
+	fprintf(f, "msec,dev,blkno,blocks,kind,ino,offset,pages,miss\n");
 	for (i = 0; i < n; i++)
 		fprintf(f, "%" PRIu32 ",%#" PRIx64 ",%" PRId64 ",%" PRIu32
-		    ",%" PRIu64 ",%" PRIu64 ",%" PRIu32 ",%d\n",
+		    ",%s,%" PRIu64 ",%" PRIu64 ",%" PRIu32 ",%d\n",
 		    pt[i].pt_msec, pt[i].pt_dev, pt[i].pt_blkno,
-		    pt[i].pt_nblks, pt[i].pt_rec->ar_ino, pt[i].pt_rec->ar_off,
+		    pt[i].pt_nblks,
+		    kindname(APREF_REC_KIND(pt[i].pt_rec->ar_flags)),
+		    pt[i].pt_rec->ar_ino, pt[i].pt_rec->ar_off,
 		    pt[i].pt_rec->ar_npages,
 		    (pt[i].pt_rec->ar_flags & APREF_REC_MISS) != 0);
 	if (fclose(f) == EOF)
@@ -704,17 +750,66 @@ writesvg(const char *path, const struct point *pt, size_t n, uint64_t dev,
  * Map the recorded reads to disk blocks and show how scattered they
  * are: in the order they were read, against the order of the disk.
  */
+/* Points being collected, with their total size and latest time. */
+struct points {
+	struct point	*ps_pt;
+	size_t		ps_n;
+	size_t		ps_max;
+	uint64_t	ps_bytes;
+	uint32_t	ps_tmax;
+};
+
+static void
+addpoint(struct points *ps, uint64_t dev, int64_t blkno, uint32_t nblks,
+    const struct aprefetch_rec *r)
+{
+	struct point *pt;
+
+	if (ps->ps_n == ps->ps_max) {
+		ps->ps_max = MAX(ps->ps_max * 2, 1024);
+		ps->ps_pt = realloc(ps->ps_pt, ps->ps_max * sizeof(*pt));
+		if (ps->ps_pt == NULL)
+			err(1, "realloc");
+	}
+	pt = &ps->ps_pt[ps->ps_n++];
+	pt->pt_dev = dev;
+	pt->pt_blkno = blkno;
+	pt->pt_nblks = nblks;
+	pt->pt_msec = r->ar_msec;
+	pt->pt_rec = r;
+	ps->ps_bytes += (uint64_t)nblks * DEV_BSIZE;
+	ps->ps_tmax = MAX(ps->ps_tmax, r->ar_msec);
+}
+
+/* Block size of the mounted file system fsid, or 0. */
+static uint64_t
+fsiosize(uint64_t fsid)
+{
+	static struct statvfs *mnt;
+	static int nmnt = -1;
+	int i;
+
+	if (nmnt == -1 && (nmnt = getmntinfo(&mnt, ST_NOWAIT)) == 0)
+		err(1, "getmntinfo");
+	for (i = 0; i < nmnt; i++) {
+		if (APREFETCH_FSID(mnt[i].f_fsidx) == fsid)
+			return mnt[i].f_iosize;
+	}
+	return 0;
+}
+
 static int
 cmd_scatter(int argc, char **argv)
 {
 	struct aprefio_trace t;
 	struct aprefetch_extent ext[MAXEXT];
 	struct aprefetch_bmap ab;
+	struct points ps = { .ps_pt = NULL };
 	struct point *pt, *sorted;
 	const char *path = APREF_TRACEFILE, *csv = NULL, *svg = NULL;
-	uint64_t bytes = 0, dev = 0;
-	size_t n = 0, max = 0, best = 0, cnt;
-	uint32_t i, j, used = 0, stale = 0, tmax = 0;
+	uint64_t dev = 0;
+	size_t n, best = 0, cnt;
+	uint32_t i, j, used = 0, nmeta = 0, stale = 0, tmax;
 	int64_t bmin = INT64_MAX, bmax = 0;
 	bool aflag = false;
 	int ch, fd;
@@ -741,13 +836,22 @@ cmd_scatter(int argc, char **argv)
 	loadtrace(path, &t);
 
 	fd = devopen(O_RDONLY);
-	pt = NULL;
 	for (i = 0; i < t.t_hdr.th_nrecs; i++) {
 		const struct aprefetch_rec * const r = &t.t_recs[i];
+		const uint32_t kind = APREF_REC_KIND(r->ar_flags);
+		uint64_t bsize;
 
 		if (!aflag && (r->ar_flags & APREF_REC_MISS) == 0)
 			continue;
 		used++;
+		if (kind != APREF_KIND_DATA)
+			nmeta++;
+		if (kind == APREF_KIND_DBLK) {
+			/* On the disk already; FFS has its dev_t in fsid. */
+			addpoint(&ps, (uint32_t)r->ar_fsid, (int64_t)r->ar_off,
+			    r->ar_size / DEV_BSIZE, r);
+			continue;
+		}
 		memset(&ab, 0, sizeof(ab));
 		ab.ab_fsid = r->ar_fsid;
 		ab.ab_ino = r->ar_ino;
@@ -756,6 +860,14 @@ cmd_scatter(int argc, char **argv)
 		ab.ab_npages = r->ar_npages;
 		ab.ab_ext = ext;
 		ab.ab_next = MAXEXT;
+		if (kind == APREF_KIND_VBLK) {
+			/* A block of a directory: map it as a range. */
+			if ((bsize = fsiosize(r->ar_fsid)) == 0) {
+				stale++;
+				continue;
+			}
+			ab.ab_off = r->ar_off * bsize;
+		}
 		if (ioctl(fd, APREFIOC_BMAP, &ab) == -1)
 			err(1, "APREFIOC_BMAP");
 		if (ab.ab_error != 0) {
@@ -765,26 +877,20 @@ cmd_scatter(int argc, char **argv)
 		for (j = 0; j < ab.ab_next; j++) {
 			if (ext[j].ae_blkno < 0)
 				continue;
-			if (n == max) {
-				max = MAX(max * 2, 1024);
-				if ((pt = realloc(pt, max * sizeof(*pt))) == NULL)
-					err(1, "realloc");
-			}
-			pt[n].pt_dev = ext[j].ae_dev;
-			pt[n].pt_blkno = ext[j].ae_blkno;
-			pt[n].pt_nblks = (uint32_t)(ext[j].ae_npages *
-			    (pagesize / DEV_BSIZE));
-			pt[n].pt_msec = r->ar_msec;
-			pt[n].pt_rec = r;
-			bytes += (uint64_t)pt[n].pt_nblks * DEV_BSIZE;
-			tmax = MAX(tmax, r->ar_msec);
-			n++;
+			addpoint(&ps, ext[j].ae_dev, ext[j].ae_blkno,
+			    (uint32_t)(ext[j].ae_npages *
+			    (pagesize / DEV_BSIZE)), r);
 		}
 	}
 	(void)close(fd);
 
-	printf("%s: %" PRIu32 " %s, %zu pieces of disk, %.1f MB\n", path, used,
-	    aflag ? "entries" : "entries that missed the cache", n, MB(bytes));
+	pt = ps.ps_pt;
+	n = ps.ps_n;
+	tmax = ps.ps_tmax;
+	printf("%s: %" PRIu32 " %s (%" PRIu32 " of metadata), %zu pieces of "
+	    "disk, %.1f MB\n", path, used,
+	    aflag ? "entries" : "entries that missed the cache", nmeta, n,
+	    MB(ps.ps_bytes));
 	if (stale > 0)
 		printf("not mapped: %" PRIu32 " entries whose file is gone or "
 		    "changed\n", stale);

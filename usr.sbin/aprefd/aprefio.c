@@ -242,8 +242,9 @@ aprefio_load_trace(const char *path, struct aprefio_trace *t)
 		goto bad;
 	memcpy(&th, buf, sizeof(th));
 	rlen = len - sizeof(th);
+	/* Version 1 has the same entries, of file data only. */
 	if (th.th_magic != APREF_TRACE_MAGIC ||
-	    th.th_version != APREF_TRACE_VERSION ||
+	    (th.th_version != 1 && th.th_version != APREF_TRACE_VERSION) ||
 	    th.th_recsize != sizeof(*rec) ||
 	    rlen != (size_t)th.th_nrecs * sizeof(*rec))
 		goto bad;

@@ -24,7 +24,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd October 31, 2026
+.Dd November 1, 2026
 .Dt APREFCTL 8
 .Os
 .Sh NAME
@@ -116,15 +116,25 @@ show the summary only.
 List the profiles and the traces.
 .It Cm dump Ar profile
 Show the header and the entries of a profile.
+The kind of an entry is
+.Dq data
+for a range of a file,
+.Dq dir
+for a block of a directory or symbolic link, and
+.Dq dev
+for a block of the device of a file system, such as one that holds
+inodes; for the latter the offset is the block number.
 .It Cm delete Ar profile
 Remove a profile.
 .It Cm trace Op Ar file
-Show the entries of a trace in time order.
+Show the entries of a trace in time order, with their kinds as for
+.Cm dump .
 .It Cm scatter Oo Fl a Oc Oo Fl c Ar csvfile Oc Oo Fl s Ar svgfile Oc Op Ar file
-Map the entries of a trace that missed the page cache, or all entries with
+Map the entries of a trace that missed the cache, or all entries with
 .Fl a ,
-to disk blocks, and show how scattered the reads were: the number of jumps
-between consecutive pieces on the same disk and their average size, once
+to disk blocks, metadata included, and show how scattered the reads were:
+the number of jumps between consecutive pieces on the same disk and their
+average size, once
 in the order of the reads and once in the order of the disk, followed by a
 plot of disk position against time.
 .Fl c

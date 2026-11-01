@@ -24,7 +24,7 @@
 .\" OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF
 .\" SUCH DAMAGE.
 .\"
-.Dd October 31, 2026
+.Dd November 1, 2026
 .Dt APREFETCH 4
 .Os
 .Sh NAME
@@ -35,11 +35,13 @@
 .Sh DESCRIPTION
 The
 .Nm
-driver records which pages of which files are read while the system boots.
-On the next boot it reads those pages ahead, in the order of their blocks
-on the disk, so that one sweep of the disk replaces the seeks of a cold
-boot.
-Only regular files on FFS file systems are recorded and prefetched.
+driver records which pages of which files, and which metadata blocks, are
+read while the system boots.
+On the next boot it reads them ahead, in the order of their blocks on the
+disk, so that one sweep of the disk replaces the seeks of a cold boot.
+Only FFS file systems are recorded and prefetched: the data of regular
+files, and as metadata the blocks of directories and symbolic links and
+the blocks that hold inodes and the other structures of the file system.
 .Pp
 A failure anywhere only means that nothing is prefetched; the contents of
 files are never affected, and the driver never writes to a disk.
@@ -52,6 +54,19 @@ Reads served from memory are recorded too, so that the entries describe
 everything the boot needed.
 Consecutive reads of the same file by the same process are merged into one
 entry.
+.Pp
+Metadata goes through the buffer cache, which finds a block by vnode and
+block number, so a block is recorded the way the file system reads it: a
+block of a directory or symbolic link by its inode and logical block
+number, and a block of the device by its block number together with the
+identity of the file system, which
+.Xr newfs 8
+changes.
+Each synchronous read of such a block adds an entry, whether or not the
+block was in memory; a read of the same block again right after is not
+recorded twice.
+Indirect blocks are not recorded; the replay reads them when it maps the
+files.
 Each CPU keeps its own ring of entries; when a ring is full, new entries are
 dropped and counted.
 .Pp
@@ -86,12 +101,21 @@ are taken in that order and the rest is dropped.
 Each file is looked up by its inode and generation number, so that an entry
 for a file that was removed or replaced is dropped, as is the part of an
 entry beyond the end of a file that has shrunk.
+Blocks of a device are dropped if its file system has been made anew
+since.
 Entries for a file system that is not mounted yet are kept until it is
 mounted.
-The ranges are then mapped to disk blocks, sorted by disk and block number,
-and read ahead asynchronously in that order, with at most
+.Pp
+The blocks of the devices are read first, in one sweep sorted by block
+number, since looking the files up reads their inodes.
+Then the ranges of the files and the blocks of the directories are mapped
+to disk blocks, sorted by disk and block number, and read ahead
+asynchronously in that order.
+At most
 .Va kern.aprefetch.max_io
-reads in flight.
+reads are in flight.
+Metadata is read into the buffer cache, at the size the file system uses
+for the block, so that its next read finds it there.
 .Pp
 A page that a process is reading already is skipped.
 A process that wants a page the replay has issued waits for that read; if
@@ -164,7 +188,8 @@ Make the entries being merged available to
 .It Dv APREFIOC_GETMARKS Fa "struct aprefetch_marks"
 Copy the marks.
 .It Dv APREFIOC_BMAP Fa "struct aprefetch_bmap"
-Map a recorded range of a file to disk blocks.
+Map a recorded range of a file, directory or symbolic link to disk
+blocks.
 .It Dv APREFIOC_REPLAY Fa "struct aprefetch_replay"
 Replay a profile image now, with the given budget or
 .Va kern.aprefetch.app_budget .
@@ -191,10 +216,12 @@ Seconds after which a recording window closes; 120 by default.
 .It Va kern.aprefetch.stats
 Read-only
 .Vt struct aprefetch_stats :
-entries recorded and dropped, reads served from memory or not, and for the
-replays the entries taken, dropped as stale and deferred, the reads and
-pages issued, the pages that were in memory already, the pages lost to
-errors, how the last replay ended and how long it took.
+entries recorded and dropped, reads of file data and of metadata served
+from memory or not, and for the replays the entries taken, dropped as stale
+and deferred, the reads and pages issued, the pages that were in memory
+already, the pages lost to errors, the metadata blocks read ahead and those
+that were in memory already, how the last replay ended and how long it
+took.
 .El
 .Sh FILES
 .Bl -tag -width /etc/aprefetch/boot.prof -compact

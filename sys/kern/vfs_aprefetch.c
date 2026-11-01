@@ -42,6 +42,17 @@
  * with read(2), which returns end-of-file once the window has closed and
  * the rings are empty.
  *
+ * FFS metadata goes through the buffer cache instead, and bio_doread()
+ * calls aprefetch_bread() for each synchronous read of a block.  The
+ * buffer cache finds a block by vnode and block number, so a read ahead
+ * only helps if it uses the same pair as the later read: blocks of
+ * directories and symbolic links are recorded by inode and logical
+ * block number, and blocks of the device (inodes, cylinder groups) by
+ * device block number, together with the identity of the file system
+ * (fs_id), which newfs(8) changes.  Reads that find the block in memory
+ * are recorded too, since the next boot may not.  Indirect blocks are
+ * read without bread() and are left to VOP_BMAP in the replay.
+ *
  * Replay.  A kernel thread reads the boot profile, keeps the entries
  * that fit in the budget (in profile order, which is the order in which
  * the data was first read), looks each file up with VFS_FHTOVP (which
@@ -49,7 +60,15 @@
  * blocks with VOP_BMAP, sorts them by disk and block number, and issues
  * asynchronous VOP_GETPAGES in that order with at most
  * kern.aprefetch.max_io i/os in flight.  Entries of a file system that
- * is not mounted yet are kept until it is mounted.
+ * is not mounted yet are kept until it is mounted.  Device blocks go
+ * first, in a sweep of their own, since looking the files up reads their
+ * inodes; directory blocks are sorted in with the file data.  Metadata
+ * is read into the buffer cache with aprefetch_bio_read(), which calls
+ * aprefetch_biodone() when a read is over; the replay counts those
+ * reads in flight instead of looking the buffers up again, since a
+ * getblk() of the wrong size would resize a buffer.  A directory block
+ * is issued with the vnode locked, at the size the file system uses
+ * then, and a size changes only under an exclusive lock.
  *
  * The pager looks up and busies the pages under the object lock, so a
  * page that a process is reading already is skipped (EBUSY), and a
@@ -87,6 +106,7 @@ __KERNEL_RCSID(0, "$NetBSD$");
 #include <sys/types.h>
 #include <sys/aprefetch.h>
 #include <sys/atomic.h>
+#include <sys/buf.h>
 #include <sys/callout.h>
 #include <sys/condvar.h>
 #include <sys/conf.h>
@@ -117,9 +137,12 @@ __KERNEL_RCSID(0, "$NetBSD$");
 
 #include <lib/libkern/libkern.h>
 
+#include <miscfs/genfs/genfs_node.h>	/* GOP_SIZE */
 #include <miscfs/specfs/specdev.h>	/* v_rdev */
 
+#include <ufs/ffs/fs.h>			/* fs_id */
 #include <ufs/ufs/inode.h>		/* struct ufid */
+#include <ufs/ufs/ufsmount.h>
 
 #include <uvm/uvm.h>
 
@@ -162,6 +185,8 @@ struct aprefetch_cpu {
 	uint64_t		ac_dropped;
 	uint64_t		ac_hits;
 	uint64_t		ac_misses;
+	uint64_t		ac_mhits;	/* metadata */
+	uint64_t		ac_mmisses;
 } __aligned(COHERENCY_UNIT);
 
 int				aprefetch_recording;
@@ -188,9 +213,14 @@ static uint64_t			aprefetch_marks_dropped;
  * protected by aprefetch_lock.
  */
 #define	APREF_FILE_NEW		0	/* not looked up yet */
-#define	APREF_FILE_OPEN		1	/* af_vp is referenced */
+#define	APREF_FILE_OPEN		1	/* af_vp is set, and referenced */
 #define	APREF_FILE_DONE		2	/* released, or could not be used */
 
+/*
+ * A file of the profile, or with af_dev the device of a file system,
+ * for its device blocks: af_ino is then the identity of the file system
+ * and af_vp the device vnode, which the mount holds rather than us.
+ */
 struct aprefetch_file {
 	uint64_t		af_fsid;
 	uint64_t		af_ino;
@@ -198,6 +228,7 @@ struct aprefetch_file {
 	int			af_state;
 	uint32_t		af_next;	/* hash chain */
 	uint32_t		af_pass;	/* last pass that looked */
+	bool			af_dev;
 	struct vnode		*af_vp;
 	off_t			af_size;
 };
@@ -208,17 +239,24 @@ struct aprefetch_file {
 
 struct aprefetch_ent {
 	struct aprefetch_file	*e_file;
-	uint64_t		e_off;
+	uint64_t		e_off;		/* offset, or block number */
 	uint32_t		e_npages;
+	uint32_t		e_size;		/* metadata: block size */
+	uint32_t		e_kind;		/* APREF_KIND_* */
 	int			e_state;
 };
 
+/*
+ * A piece to read: x_npages pages of a file at x_off, or, with x_size
+ * set, the metadata block x_off of x_file's vnode.
+ */
 struct aprefetch_ext {
 	struct aprefetch_file	*x_file;
 	uint64_t		x_dev;
 	int64_t			x_blkno;
 	off_t			x_off;
 	uint32_t		x_npages;
+	uint32_t		x_size;
 };
 
 struct aprefetch_io {
@@ -265,6 +303,9 @@ struct aprefetch_run {
 
 static struct aprefetch_run	*aprefetch_running;	/* (L) */
 static struct aprefetch_stats	aprefetch_st;	/* replay part */
+static lwp_t			*aprefetch_replay_lwp;	/* reads not to record */
+static unsigned int		aprefetch_nbufs;	/* (L) metadata reads in flight */
+static uint64_t			aprefetch_meta_errpages; /* (L) pages of failed ones */
 
 typedef void (*aprefetch_extfn_t)(void *, uint64_t, int64_t, off_t,
     uint32_t);
@@ -388,38 +429,87 @@ aprefetch_publish(struct aprefetch_cpu *ac)
 	ac->ac_records++;
 }
 
+/*
+ * Fold rec into cur, the pending entry, if both are of the same file and
+ * kind and touch.
+ */
+static bool
+aprefetch_merge(struct aprefetch_rec *cur, const struct aprefetch_rec *rec)
+{
+	uint64_t cend, rend, start, end;
+
+	if (cur->ar_fsid != rec->ar_fsid || cur->ar_ino != rec->ar_ino ||
+	    cur->ar_gen != rec->ar_gen || cur->ar_pid != rec->ar_pid ||
+	    APREF_REC_KIND(cur->ar_flags) != APREF_REC_KIND(rec->ar_flags))
+		return false;
+	if (APREF_REC_KIND(rec->ar_flags) != APREF_KIND_DATA) {
+		/* The same metadata block again: one entry is enough. */
+		if (cur->ar_off != rec->ar_off || cur->ar_size != rec->ar_size)
+			return false;
+		cur->ar_flags |= rec->ar_flags;
+		return true;
+	}
+	cend = cur->ar_off + ((uint64_t)cur->ar_npages << PAGE_SHIFT);
+	rend = rec->ar_off + ((uint64_t)rec->ar_npages << PAGE_SHIFT);
+	start = MIN(cur->ar_off, rec->ar_off);
+	end = MAX(cend, rend);
+	if (rec->ar_off > cend || rend < cur->ar_off ||
+	    ((end - start) >> PAGE_SHIFT) > UINT32_MAX)
+		return false;
+	cur->ar_off = start;
+	cur->ar_npages = (uint32_t)((end - start) >> PAGE_SHIFT);
+	cur->ar_flags |= rec->ar_flags;
+	return true;
+}
+
 static void
 aprefetch_add(struct aprefetch_cpu *ac, const struct aprefetch_rec *rec)
 {
-	struct aprefetch_rec * const cur = &ac->ac_cur;
+	const bool miss = (rec->ar_flags & APREF_REC_MISS) != 0;
+	uint64_t *count;
 
-	if (rec->ar_flags & APREF_REC_MISS)
-		ac->ac_misses++;
+	if (APREF_REC_KIND(rec->ar_flags) == APREF_KIND_DATA)
+		count = miss ? &ac->ac_misses : &ac->ac_hits;
 	else
-		ac->ac_hits++;
+		count = miss ? &ac->ac_mmisses : &ac->ac_mhits;
+	(*count)++;
 
-	if (ac->ac_pending && cur->ar_fsid == rec->ar_fsid &&
-	    cur->ar_ino == rec->ar_ino && cur->ar_gen == rec->ar_gen &&
-	    cur->ar_pid == rec->ar_pid) {
-		const uint64_t cend = cur->ar_off +
-		    ((uint64_t)cur->ar_npages << PAGE_SHIFT);
-		const uint64_t rend = rec->ar_off +
-		    ((uint64_t)rec->ar_npages << PAGE_SHIFT);
-		const uint64_t start = MIN(cur->ar_off, rec->ar_off);
-		const uint64_t end = MAX(cend, rend);
-
-		if (rec->ar_off <= cend && rend >= cur->ar_off &&
-		    ((end - start) >> PAGE_SHIFT) <= UINT32_MAX) {
-			cur->ar_off = start;
-			cur->ar_npages = (uint32_t)((end - start) >> PAGE_SHIFT);
-			cur->ar_flags |= rec->ar_flags;
-			return;
-		}
-	}
+	if (ac->ac_pending && aprefetch_merge(&ac->ac_cur, rec))
+		return;
 	if (ac->ac_pending)
 		aprefetch_publish(ac);
-	*cur = *rec;
+	ac->ac_cur = *rec;
 	ac->ac_pending = true;
+}
+
+/* Append rec to this CPU's ring, unless the window closed meanwhile. */
+static void
+aprefetch_record(struct aprefetch_rec *rec)
+{
+
+	kpreempt_disable();
+	if (atomic_load_acquire(&aprefetch_recording)) {
+		rec->ar_msec = aprefetch_msec(&aprefetch_window_start);
+		aprefetch_add(&aprefetch_cpus[cpu_index(curcpu())], rec);
+	}
+	kpreempt_enable();
+}
+
+static bool
+aprefetch_is_ffs(struct mount *mp)
+{
+
+	return strcmp(mp->mnt_stat.f_fstypename, MOUNT_FFS) == 0;
+}
+
+/* Identity of an FFS instance, which newfs(8) changes. */
+static uint64_t
+aprefetch_fsident(struct mount *mp)
+{
+	const struct fs * const fs = VFSTOUFS(mp)->um_fs;
+
+	return (uint64_t)(uint32_t)fs->fs_id[0] |
+	    (uint64_t)(uint32_t)fs->fs_id[1] << 32;
 }
 
 /*
@@ -438,7 +528,7 @@ aprefetch_getpages(struct vnode *vp, off_t off, int npages, int centeridx,
 	size_t fhsize;
 
 	if (memwrite || readahead || vp->v_type != VREG || mp == NULL ||
-	    strcmp(mp->mnt_stat.f_fstypename, MOUNT_FFS) != 0)
+	    !aprefetch_is_ffs(mp))
 		return;
 	if (flags & PGO_LOCKED) {
 		/* Fault fast path: the neighbours are mapped if resident. */
@@ -456,17 +546,57 @@ aprefetch_getpages(struct vnode *vp, off_t off, int npages, int centeridx,
 	rec.ar_gen = ufh.ufid_gen;
 	rec.ar_npages = npages;
 	rec.ar_pid = curproc->p_pid;
-	rec.ar_flags = (pg == NULL || (pg->flags & PG_FAKE) != 0) ?
-	    APREF_REC_MISS : 0;
-	rec.ar_pad = 0;
+	rec.ar_flags = APREF_KIND_DATA |
+	    ((pg == NULL || (pg->flags & PG_FAKE) != 0) ? APREF_REC_MISS : 0);
+	rec.ar_size = 0;
+	aprefetch_record(&rec);
+}
 
-	kpreempt_disable();
-	/* The window may have closed while we got here. */
-	if (atomic_load_acquire(&aprefetch_recording)) {
-		rec.ar_msec = aprefetch_msec(&aprefetch_window_start);
-		aprefetch_add(&aprefetch_cpus[cpu_index(curcpu())], &rec);
-	}
-	kpreempt_enable();
+/*
+ * Called by bio_doread() for each synchronous read of a buffer while a
+ * window is open; miss tells whether the block was not in memory.
+ */
+void
+aprefetch_bread(struct vnode *vp, daddr_t blkno, int size, bool miss)
+{
+	struct aprefetch_rec rec;
+	struct mount *mp;
+	struct ufid ufh;
+	size_t fhsize;
+
+	/* The replay looking its files up reads inodes: not the boot's. */
+	if (blkno < 0 || size <= 0 ||
+	    curlwp == atomic_load_relaxed(&aprefetch_replay_lwp))
+		return;
+	if (vp->v_type == VBLK) {
+		/* A block of the device of a file system: inodes and such. */
+		mp = spec_node_getmountedfs(vp);
+		if (mp == NULL || !aprefetch_is_ffs(mp))
+			return;
+		rec.ar_ino = aprefetch_fsident(mp);
+		rec.ar_gen = 0;
+		rec.ar_flags = APREF_KIND_DBLK;
+	} else if (vp->v_type == VDIR || vp->v_type == VLNK) {
+		mp = vp->v_mount;
+		if (mp == NULL || !aprefetch_is_ffs(mp))
+			return;
+		fhsize = sizeof(ufh);
+		if (VFS_VPTOFH(vp, (struct fid *)&ufh, &fhsize) != 0)
+			return;
+		rec.ar_ino = ufh.ufid_ino;
+		rec.ar_gen = ufh.ufid_gen;
+		rec.ar_flags = APREF_KIND_VBLK;
+	} else
+		return;
+
+	rec.ar_fsid = APREFETCH_FSID(mp->mnt_stat.f_fsidx);
+	rec.ar_off = (uint64_t)blkno;
+	rec.ar_npages = (uint32_t)howmany(size, PAGE_SIZE);
+	rec.ar_size = (uint32_t)size;
+	rec.ar_pid = curproc->p_pid;
+	if (miss)
+		rec.ar_flags |= APREF_REC_MISS;
+	aprefetch_record(&rec);
 }
 
 static void
@@ -677,17 +807,18 @@ aprefetch_readprof(const char *path, void **bufp, size_t *lenp)
 
 static struct aprefetch_file *
 aprefetch_file_get(struct aprefetch_run *run, uint64_t fsid, uint64_t ino,
-    uint32_t gen)
+    uint32_t gen, bool dev)
 {
 	struct aprefetch_file *af;
 	uint64_t x;
 	uint32_t h, i;
 
-	x = (ino ^ (fsid << 7)) * 0x9e3779b97f4a7c15ULL;
+	x = (ino ^ (fsid << 7) ^ dev) * 0x9e3779b97f4a7c15ULL;
 	h = (uint32_t)(x >> 32) & run->r_hashmask;
 	for (i = run->r_hash[h]; i != UINT32_MAX; i = af->af_next) {
 		af = &run->r_files[i];
-		if (af->af_fsid == fsid && af->af_ino == ino && af->af_gen == gen)
+		if (af->af_fsid == fsid && af->af_ino == ino &&
+		    af->af_gen == gen && af->af_dev == dev)
 			return af;
 	}
 	i = run->r_nfiles++;
@@ -695,10 +826,33 @@ aprefetch_file_get(struct aprefetch_run *run, uint64_t fsid, uint64_t ino,
 	af->af_fsid = fsid;
 	af->af_ino = ino;
 	af->af_gen = gen;
+	af->af_dev = dev;
 	af->af_state = APREF_FILE_NEW;
 	af->af_next = run->r_hash[h];
 	run->r_hash[h] = i;
 	return af;
+}
+
+/* Is a profile entry well formed? */
+static bool
+aprefetch_ent_ok(const struct aprefetch_prof_ent *pe)
+{
+
+	switch (pe->pe_kind) {
+	case APREF_KIND_DATA:
+		return pe->pe_npages != 0 && pe->pe_size == 0 &&
+		    (pe->pe_off & PAGE_MASK) == 0 &&
+		    pe->pe_off <= (uint64_t)INT64_MAX -
+		    ((uint64_t)pe->pe_npages << PAGE_SHIFT);
+	case APREF_KIND_VBLK:
+	case APREF_KIND_DBLK:
+		return pe->pe_size != 0 && pe->pe_size <= MAXBSIZE &&
+		    pe->pe_npages == howmany(pe->pe_size, PAGE_SIZE) &&
+		    pe->pe_off <= (uint64_t)INT64_MAX &&
+		    (pe->pe_kind == APREF_KIND_VBLK || pe->pe_gen == 0);
+	default:
+		return false;
+	}
 }
 
 /*
@@ -731,9 +885,7 @@ aprefetch_run_parse(struct aprefetch_run *run, const void *buf, size_t len)
 	pe = (const struct aprefetch_prof_ent *)
 	    ((const uint8_t *)buf + sizeof(ph));
 	for (i = 0; i < ph.ph_nentries; i++) {
-		if (pe[i].pe_npages == 0 || (pe[i].pe_off & PAGE_MASK) != 0 ||
-		    pe[i].pe_off > (uint64_t)INT64_MAX -
-		    ((uint64_t)pe[i].pe_npages << PAGE_SHIFT))
+		if (!aprefetch_ent_ok(&pe[i]))
 			return EFTYPE;
 	}
 
@@ -759,9 +911,14 @@ aprefetch_run_parse(struct aprefetch_run *run, const void *buf, size_t len)
 		struct aprefetch_ent * const e = &run->r_ents[i];
 
 		e->e_file = aprefetch_file_get(run, pe[i].pe_fsid,
-		    pe[i].pe_ino, pe[i].pe_gen);
+		    pe[i].pe_ino, pe[i].pe_gen,
+		    pe[i].pe_kind == APREF_KIND_DBLK);
 		e->e_off = pe[i].pe_off;
-		e->e_npages = (uint32_t)MIN(left, pe[i].pe_npages);
+		e->e_kind = pe[i].pe_kind;
+		e->e_size = pe[i].pe_size;
+		/* A metadata block is read whole or not at all. */
+		e->e_npages = e->e_kind == APREF_KIND_DATA ?
+		    (uint32_t)MIN(left, pe[i].pe_npages) : pe[i].pe_npages;
 		e->e_state = APREF_ENT_TODO;
 		left -= e->e_npages;
 	}
@@ -792,7 +949,7 @@ aprefetch_vget(uint64_t fsid, uint64_t ino, uint32_t gen, struct vnode **vpp,
 	while ((mp = mountlist_iterator_next(iter)) != NULL) {
 		if (APREFETCH_FSID(mp->mnt_stat.f_fsidx) != fsid)
 			continue;
-		if (strcmp(mp->mnt_stat.f_fstypename, MOUNT_FFS) != 0) {
+		if (!aprefetch_is_ffs(mp)) {
 			error = EOPNOTSUPP;
 			break;
 		}
@@ -808,7 +965,7 @@ aprefetch_vget(uint64_t fsid, uint64_t ino, uint32_t gen, struct vnode **vpp,
 	if (error)
 		return error;
 
-	if (vp->v_type != VREG) {
+	if (vp->v_type != VREG && vp->v_type != VDIR && vp->v_type != VLNK) {
 		vput(vp);
 		return EFTYPE;
 	}
@@ -821,6 +978,36 @@ aprefetch_vget(uint64_t fsid, uint64_t ino, uint32_t gen, struct vnode **vpp,
 	*vpp = vp;
 	*sizep = va.va_size;
 	return 0;
+}
+
+/*
+ * The device vnode of the file system fsid, for its device blocks.  It
+ * is not referenced: the mount holds it, and an unmount waits for the
+ * replay.  ESTALE means that the file system was made anew since.
+ */
+static int
+aprefetch_devget(uint64_t fsid, uint64_t ident, struct vnode **vpp)
+{
+	mount_iterator_t *iter;
+	struct mount *mp;
+	int error = ENODEV;
+
+	mountlist_iterator_init(&iter);
+	while ((mp = mountlist_iterator_next(iter)) != NULL) {
+		if (APREFETCH_FSID(mp->mnt_stat.f_fsidx) != fsid)
+			continue;
+		if (!aprefetch_is_ffs(mp))
+			error = EOPNOTSUPP;
+		else if (aprefetch_fsident(mp) != ident)
+			error = ESTALE;
+		else {
+			*vpp = VFSTOUFS(mp)->um_devvp;
+			error = 0;
+		}
+		break;
+	}
+	mountlist_iterator_destroy(iter);
+	return error;
 }
 
 /*
@@ -865,30 +1052,13 @@ struct aprefetch_mapctx {
 	struct aprefetch_file	*mc_file;
 };
 
-static void
-aprefetch_add_ext(void *arg, uint64_t dev, int64_t blkno, off_t off,
-    uint32_t npages)
+/* A new slot at the end of the extents. */
+static struct aprefetch_ext *
+aprefetch_ext_new(struct aprefetch_run *run)
 {
-	struct aprefetch_mapctx * const mc = arg;
-	struct aprefetch_run * const run = mc->mc_run;
-	struct aprefetch_ext *x, *nx;
+	struct aprefetch_ext *nx;
 	uint32_t nmax;
 
-	if (blkno < 0)
-		return;		/* a hole: nothing to read */
-
-	/* Physically contiguous with the last piece: make it one. */
-	if (run->r_nexts > run->r_passext) {
-		x = &run->r_exts[run->r_nexts - 1];
-		if (x->x_file == mc->mc_file && x->x_dev == dev &&
-		    x->x_off + ((off_t)x->x_npages << PAGE_SHIFT) == off &&
-		    x->x_blkno + ((off_t)x->x_npages << (PAGE_SHIFT -
-		    DEV_BSHIFT)) == blkno &&
-		    x->x_npages + npages > x->x_npages) {
-			x->x_npages += npages;
-			return;
-		}
-	}
 	if (run->r_nexts == run->r_maxexts) {
 		nmax = MAX(run->r_maxexts * 2, 256);
 		nx = kmem_alloc(nmax * sizeof(*nx), KM_SLEEP);
@@ -899,12 +1069,55 @@ aprefetch_add_ext(void *arg, uint64_t dev, int64_t blkno, off_t off,
 		run->r_exts = nx;
 		run->r_maxexts = nmax;
 	}
-	x = &run->r_exts[run->r_nexts++];
+	return &run->r_exts[run->r_nexts++];
+}
+
+static void
+aprefetch_add_ext(void *arg, uint64_t dev, int64_t blkno, off_t off,
+    uint32_t npages)
+{
+	struct aprefetch_mapctx * const mc = arg;
+	struct aprefetch_run * const run = mc->mc_run;
+	struct aprefetch_ext *x;
+
+	if (blkno < 0)
+		return;		/* a hole: nothing to read */
+
+	/* Physically contiguous with the last piece: make it one. */
+	if (run->r_nexts > run->r_passext) {
+		x = &run->r_exts[run->r_nexts - 1];
+		if (x->x_file == mc->mc_file && x->x_size == 0 &&
+		    x->x_dev == dev &&
+		    x->x_off + ((off_t)x->x_npages << PAGE_SHIFT) == off &&
+		    x->x_blkno + ((off_t)x->x_npages << (PAGE_SHIFT -
+		    DEV_BSHIFT)) == blkno &&
+		    x->x_npages + npages > x->x_npages) {
+			x->x_npages += npages;
+			return;
+		}
+	}
+	x = aprefetch_ext_new(run);
 	x->x_file = mc->mc_file;
 	x->x_dev = dev;
 	x->x_blkno = blkno;
 	x->x_off = off;
 	x->x_npages = npages;
+	x->x_size = 0;
+}
+
+/* Metadata block bno of af's vnode, which is at blkno on the disk dev. */
+static void
+aprefetch_add_meta(struct aprefetch_run *run, struct aprefetch_file *af,
+    uint64_t dev, int64_t blkno, daddr_t bno, const struct aprefetch_ent *e)
+{
+	struct aprefetch_ext * const x = aprefetch_ext_new(run);
+
+	x->x_file = af;
+	x->x_dev = dev;
+	x->x_blkno = blkno;
+	x->x_off = bno;
+	x->x_npages = e->e_npages;
+	x->x_size = e->e_size;
 }
 
 static int
@@ -979,7 +1192,24 @@ aprefetch_wait_io(struct vnode *vp, off_t off, int npages)
 	return missing;
 }
 
-/* Wait for the oldest i/o in flight. */
+/* Called by biodone() when a metadata read is over. */
+static void
+aprefetch_biodone(struct buf *bp)
+{
+	const bool failed = bp->b_error != 0;
+	const int npages = howmany(bp->b_bcount, PAGE_SIZE);
+
+	brelse(bp, 0);		/* which invalidates it if the read failed */
+	mutex_enter(&aprefetch_lock);
+	if (failed)
+		aprefetch_meta_errpages += npages;
+	KASSERT(aprefetch_nbufs > 0);
+	aprefetch_nbufs--;
+	cv_broadcast(&aprefetch_cv);
+	mutex_exit(&aprefetch_lock);
+}
+
+/* Wait for the oldest file data i/o in flight. */
 static void
 aprefetch_reap(struct aprefetch_run *run)
 {
@@ -993,18 +1223,46 @@ aprefetch_reap(struct aprefetch_run *run)
 	run->r_niow--;
 }
 
+/* Wait until another i/o may go out. */
+static void
+aprefetch_throttle(struct aprefetch_run *run)
+{
+
+	for (;;) {
+		mutex_enter(&aprefetch_lock);
+		if (run->r_niow + aprefetch_nbufs < run->r_maxio) {
+			mutex_exit(&aprefetch_lock);
+			return;
+		}
+		if (run->r_niow == 0) {
+			/* Only metadata is in flight: wait for a read. */
+			cv_wait(&aprefetch_cv, &aprefetch_lock);
+			mutex_exit(&aprefetch_lock);
+			continue;
+		}
+		mutex_exit(&aprefetch_lock);
+		aprefetch_reap(run);
+	}
+}
+
 static void
 aprefetch_drain(struct aprefetch_run *run)
 {
 
 	while (run->r_niow > 0)
 		aprefetch_reap(run);
+	mutex_enter(&aprefetch_lock);
+	while (aprefetch_nbufs > 0)
+		cv_wait(&aprefetch_cv, &aprefetch_lock);
+	mutex_exit(&aprefetch_lock);
 }
 
 /* Release the vnodes, of mp only if mp is not NULL.  Drain first. */
 static void
 aprefetch_release(struct aprefetch_run *run, struct mount *mp)
 {
+	const uint64_t fsid = mp != NULL ?
+	    APREFETCH_FSID(mp->mnt_stat.f_fsidx) : 0;
 	struct aprefetch_file *af;
 	uint32_t i;
 
@@ -1013,9 +1271,10 @@ aprefetch_release(struct aprefetch_run *run, struct mount *mp)
 		af = &run->r_files[i];
 		if (af->af_state != APREF_FILE_OPEN)
 			continue;
-		if (mp != NULL && af->af_vp->v_mount != mp)
+		if (mp != NULL && af->af_fsid != fsid)
 			continue;
-		vrele(af->af_vp);
+		if (!af->af_dev)
+			vrele(af->af_vp);
 		af->af_vp = NULL;
 		af->af_state = APREF_FILE_DONE;
 	}
@@ -1078,25 +1337,158 @@ aprefetch_stop(struct aprefetch_run *run)
 	return run->r_end != APREF_END_NONE;
 }
 
+/*
+ * Look the file of an entry up, once per pass.  Returns false if the
+ * entry waits for its file system to be mounted.
+ */
+static bool
+aprefetch_lookup(struct aprefetch_run *run, struct aprefetch_ent *e)
+{
+	struct aprefetch_file * const af = e->e_file;
+	int error;
+
+	if (af->af_state == APREF_FILE_NEW) {
+		error = ENODEV;
+		if (af->af_pass != run->r_pass) {
+			af->af_pass = run->r_pass;
+			error = af->af_dev ?
+			    aprefetch_devget(af->af_fsid, af->af_ino,
+			    &af->af_vp) :
+			    aprefetch_vget(af->af_fsid, af->af_ino, af->af_gen,
+			    &af->af_vp, &af->af_size);
+		}
+		if (error == ENODEV) {
+			/* Not mounted yet: keep it for the mount. */
+			if (e->e_state != APREF_ENT_DEFERRED) {
+				e->e_state = APREF_ENT_DEFERRED;
+				run->r_ndeferred++;
+				aprefetch_st.st_deferred++;
+			}
+			return false;
+		}
+		af->af_state = error ? APREF_FILE_DONE : APREF_FILE_OPEN;
+	}
+	if (e->e_state == APREF_ENT_DEFERRED)
+		run->r_ndeferred--;
+	e->e_state = APREF_ENT_DONE;
+	return true;
+}
+
+/* Turn an entry whose file is open into the pieces to read. */
 static void
 aprefetch_map_ent(struct aprefetch_run *run, struct aprefetch_ent *e)
 {
 	struct aprefetch_file * const af = e->e_file;
+	struct vnode * const vp = af->af_vp;
 	struct aprefetch_mapctx mc = { .mc_run = run, .mc_file = af };
 	const off_t off = e->e_off;
+	struct vnode *devvp;
+	daddr_t blkno;
 	off_t end;
+	int error;
 
-	/* The file may have shrunk since it was recorded. */
-	end = MIN(off + ((off_t)e->e_npages << PAGE_SHIFT),
-	    round_page(af->af_size));
-	if (off >= end) {
-		aprefetch_st.st_stale++;
+	switch (e->e_kind) {
+	case APREF_KIND_DATA:
+		/* The file may have shrunk since it was recorded. */
+		end = MIN(off + ((off_t)e->e_npages << PAGE_SHIFT),
+		    round_page(af->af_size));
+		if (vp->v_type != VREG || off >= end)
+			break;
+		(void)aprefetch_bmap(vp, off, end, aprefetch_add_ext, &mc);
+		return;
+	case APREF_KIND_VBLK:
+		if (vp->v_type != VDIR && vp->v_type != VLNK)
+			break;
+		/* Only to sort it in: the read maps it again. */
+		vn_lock(vp, LK_SHARED | LK_RETRY);
+		error = VOP_BMAP(vp, (daddr_t)off, &devvp, &blkno, NULL);
+		VOP_UNLOCK(vp);
+		if (error || blkno == (daddr_t)-1)
+			break;
+		aprefetch_add_meta(run, af, devvp->v_rdev, blkno, (daddr_t)off,
+		    e);
+		return;
+	case APREF_KIND_DBLK:
+		aprefetch_add_meta(run, af, vp->v_rdev, (int64_t)off,
+		    (daddr_t)off, e);
 		return;
 	}
-	(void)aprefetch_bmap(af->af_vp, off, end, aprefetch_add_ext, &mc);
+	aprefetch_st.st_stale++;
 }
 
-/* Issue the extents of this pass in sorted order. */
+/*
+ * Size of block lbn of a locked directory or link as the file system
+ * reads it now (see ufs_blkatoff()), or 0 if it is past the end.
+ */
+static int
+aprefetch_vblk_size(struct vnode *vp, daddr_t lbn)
+{
+	const int bshift = vp->v_mount->mnt_fs_bshift;
+	off_t eof, cur;
+
+	if (vp->v_type != VDIR && vp->v_type != VLNK)
+		return 0;
+	GOP_SIZE(vp, vp->v_size, &eof, 0);
+	cur = (off_t)lbn << bshift;
+	if (cur >= eof)
+		return 0;
+	return (int)MIN(eof - cur, (off_t)1 << bshift);
+}
+
+/* Issue one metadata block.  Returns false if the replay must stop. */
+static bool
+aprefetch_issue_meta(struct aprefetch_run *run, const struct aprefetch_ext *x)
+{
+	struct aprefetch_file * const af = x->x_file;
+	struct vnode * const vp = af->af_vp;
+	const daddr_t bno = (daddr_t)x->x_off;
+	bool started = false;
+	int size;
+
+	if (aprefetch_stop(run))
+		return false;
+	if (af->af_state != APREF_FILE_OPEN)
+		return true;		/* its file system went away */
+	if (run->r_used + x->x_npages > run->r_budget) {
+		run->r_end = APREF_END_BUDGET;
+		return false;
+	}
+	aprefetch_throttle(run);
+
+	/* Counted first: the read may be over before it returns. */
+	mutex_enter(&aprefetch_lock);
+	aprefetch_nbufs++;
+	mutex_exit(&aprefetch_lock);
+	if (af->af_dev) {
+		size = (int)x->x_size;
+		started = aprefetch_bio_read(vp, bno, size, aprefetch_biodone);
+	} else {
+		/* At the size the file system uses: see the top. */
+		vn_lock(vp, LK_SHARED | LK_RETRY);
+		size = aprefetch_vblk_size(vp, bno);
+		if (size > 0)
+			started = aprefetch_bio_read(vp, bno, size,
+			    aprefetch_biodone);
+		VOP_UNLOCK(vp);
+	}
+	if (started) {
+		/* Charge now, while the i/o is in flight. */
+		run->r_used += x->x_npages;
+		aprefetch_st.st_pages += x->x_npages;
+		aprefetch_st.st_meta_ios++;
+		return true;
+	}
+	mutex_enter(&aprefetch_lock);
+	aprefetch_nbufs--;
+	mutex_exit(&aprefetch_lock);
+	if (size > 0)
+		aprefetch_st.st_meta_cached++;
+	else
+		aprefetch_st.st_stale++;	/* the directory has shrunk */
+	return true;
+}
+
+/* Issue the extents of this stage in sorted order. */
 static void
 aprefetch_issue(struct aprefetch_run *run)
 {
@@ -1109,6 +1501,11 @@ aprefetch_issue(struct aprefetch_run *run)
 
 	for (i = run->r_passext; i < run->r_nexts; i++) {
 		x = &run->r_exts[i];
+		if (x->x_size != 0) {
+			if (!aprefetch_issue_meta(run, x))
+				return;
+			continue;
+		}
 		af = x->x_file;
 		off = x->x_off;
 		end = off + ((off_t)x->x_npages << PAGE_SHIFT);
@@ -1131,8 +1528,7 @@ aprefetch_issue(struct aprefetch_run *run)
 			    ~(off_t)(MAXPHYS - 1)) - off) >> PAGE_SHIFT);
 			npages = (int)MIN((uint64_t)npages,
 			    run->r_budget - run->r_used);
-			while (run->r_niow >= run->r_maxio)
-				aprefetch_reap(run);
+			aprefetch_throttle(run);
 
 			absent = aprefetch_absent(af->af_vp, off, npages);
 			if (absent == 0) {
@@ -1161,50 +1557,27 @@ aprefetch_issue(struct aprefetch_run *run)
 }
 
 /*
- * One pass: look up, map, sort and issue every entry whose file system
- * is mounted, then wait for the i/o and release the vnodes.
+ * Look up, map, sort and issue the entries for device blocks (dev), or
+ * all the others, whose file system is mounted.
  */
 static void
-aprefetch_pass(struct aprefetch_run *run)
+aprefetch_stage(struct aprefetch_run *run, bool dev)
 {
 	struct aprefetch_ent *e;
-	struct aprefetch_file *af;
 	struct aprefetch_ext tmp;
 	uint32_t i;
-	int error;
 
-	run->r_pass++;
 	run->r_passext = run->r_nexts;
 	for (i = 0; i < run->r_nents; i++) {
 		e = &run->r_ents[i];
-		if (e->e_state == APREF_ENT_DONE)
+		if (e->e_state == APREF_ENT_DONE ||
+		    (e->e_kind == APREF_KIND_DBLK) != dev)
 			continue;
 		if (aprefetch_stop(run))
-			goto out;
-		af = e->e_file;
-		if (af->af_state == APREF_FILE_NEW) {
-			error = ENODEV;
-			if (af->af_pass != run->r_pass) {
-				af->af_pass = run->r_pass;
-				error = aprefetch_vget(af->af_fsid, af->af_ino,
-				    af->af_gen, &af->af_vp, &af->af_size);
-			}
-			if (error == ENODEV) {
-				/* Not mounted yet: keep it for the mount. */
-				if (e->e_state != APREF_ENT_DEFERRED) {
-					e->e_state = APREF_ENT_DEFERRED;
-					run->r_ndeferred++;
-					aprefetch_st.st_deferred++;
-				}
-				continue;
-			}
-			af->af_state = error ? APREF_FILE_DONE :
-			    APREF_FILE_OPEN;
-		}
-		if (e->e_state == APREF_ENT_DEFERRED)
-			run->r_ndeferred--;
-		e->e_state = APREF_ENT_DONE;
-		if (af->af_state != APREF_FILE_OPEN) {
+			return;
+		if (!aprefetch_lookup(run, e))
+			continue;
+		if (e->e_file->af_state != APREF_FILE_OPEN) {
 			aprefetch_st.st_stale++;
 			continue;
 		}
@@ -1215,7 +1588,21 @@ aprefetch_pass(struct aprefetch_run *run)
 		    run->r_nexts - run->r_passext, sizeof(tmp),
 		    aprefetch_ext_cmp, &tmp);
 	aprefetch_issue(run);
-out:
+}
+
+/*
+ * One pass: the device blocks first, since looking the files up reads
+ * their inodes, then the rest; then wait for the i/o and release the
+ * vnodes.
+ */
+static void
+aprefetch_pass(struct aprefetch_run *run)
+{
+
+	run->r_pass++;
+	aprefetch_stage(run, true);
+	if (run->r_end == APREF_END_NONE)
+		aprefetch_stage(run, false);
 	aprefetch_drain(run);
 	aprefetch_release(run, NULL);
 }
@@ -1327,6 +1714,7 @@ aprefetch_run_thread(void *arg)
 	struct timespec t0;
 
 	getnanouptime(&t0);
+	atomic_store_relaxed(&aprefetch_replay_lwp, curlwp);
 	aprefetch_mark("replay: start");
 	if (run->r_boot)
 		aprefetch_run_load(run);
@@ -1339,6 +1727,7 @@ aprefetch_run_thread(void *arg)
 	}
 	if (run->r_end == APREF_END_NONE)
 		run->r_end = APREF_END_DONE;
+	atomic_store_relaxed(&aprefetch_replay_lwp, NULL);
 	aprefetch_run_end(run, aprefetch_msec(&t0));
 	aprefetch_mark("replay: end");
 	kthread_exit(0);
@@ -1748,6 +2137,7 @@ sysctl_aprefetch_stats(SYSCTLFN_ARGS)
 
 	mutex_enter(&aprefetch_lock);
 	st = aprefetch_st;
+	st.st_errors += aprefetch_meta_errpages;
 	mutex_exit(&aprefetch_lock);
 	for (i = 0; i < ncpu; i++) {
 		const struct aprefetch_cpu * const ac = &aprefetch_cpus[i];
@@ -1756,6 +2146,8 @@ sysctl_aprefetch_stats(SYSCTLFN_ARGS)
 		st.st_dropped += ac->ac_dropped;
 		st.st_hits += ac->ac_hits;
 		st.st_misses += ac->ac_misses;
+		st.st_meta_hits += ac->ac_mhits;
+		st.st_meta_misses += ac->ac_mmisses;
 	}
 	node.sysctl_data = &st;
 	node.sysctl_size = sizeof(st);
